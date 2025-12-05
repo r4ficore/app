@@ -18,6 +18,9 @@ $TAVILY_KEY = $env('TAVILY_KEY', "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");
 $DATA_DIR = rtrim($env('DATA_DIR', __DIR__ . '/data'), '/');
 $MEMORY_LIMIT = 20000;
 $PROJECT_LIMIT = 2;
+$MAX_UPLOAD_SIZE = 2 * 1024 * 1024; // 2MB
+$ALLOWED_UPLOAD_MIME = ['text/plain', 'text/markdown', 'text/x-markdown', 'application/json', 'text/csv'];
+$MAX_FILE_PROMPT_CHARS = 12000;
 
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: POST, GET, OPTIONS");
@@ -40,6 +43,13 @@ function get_json($filename) {
 function save_json($filename, $data) {
     global $DATA_DIR;
     file_put_contents($DATA_DIR . '/' . basename($filename), json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+}
+
+function sanitize_file_content(string $content, int $maxLen) {
+    // Usuń znaki kontrolne (poza nową linią/tab) i przytnij do bezpiecznej długości
+    $content = preg_replace('/[\x00-\x08\x0B-\x1F\x7F]/u', '', $content);
+    $content = mb_substr($content, 0, $maxLen);
+    return $content;
 }
 
 function send_json($data) {
@@ -253,8 +263,25 @@ if ($action === 'chat') {
 
     // Plik
     $file_content = "";
-    if (isset($_FILES['file']) && $_FILES['file']['error'] === UPLOAD_ERR_OK) {
-        $file_content = "\n\n--- ZAŁĄCZNIK: {$_FILES['file']['name']} ---\n" . file_get_contents($_FILES['file']['tmp_name']) . "\n------\n";
+    if (isset($_FILES['file']) && $_FILES['file']['error'] !== UPLOAD_ERR_NO_FILE) {
+        if ($_FILES['file']['error'] !== UPLOAD_ERR_OK) {
+            echo json_encode(['status' => 'file_error', 'msg' => 'Błąd przesyłania pliku.']) . "\n"; flush(); exit;
+        }
+        if ($_FILES['file']['size'] > $MAX_UPLOAD_SIZE) {
+            echo json_encode(['status' => 'file_error', 'msg' => 'Plik przekracza 2MB.']) . "\n"; flush(); exit;
+        }
+
+        $finfo = finfo_open(FILEINFO_MIME_TYPE);
+        $mime = $finfo ? finfo_file($finfo, $_FILES['file']['tmp_name']) : '';
+        if ($finfo) finfo_close($finfo);
+
+        if ($mime && !in_array($mime, $ALLOWED_UPLOAD_MIME)) {
+            echo json_encode(['status' => 'file_error', 'msg' => 'Niedozwolony typ pliku. Dozwolone: TXT/MD/JSON/CSV.']) . "\n"; flush(); exit;
+        }
+
+        $raw_content = file_get_contents($_FILES['file']['tmp_name']);
+        $clean_content = sanitize_file_content($raw_content ?: '', $MAX_FILE_PROMPT_CHARS);
+        $file_content = "\n\n--- ZAŁĄCZNIK: {$_FILES['file']['name']} ---\n" . $clean_content . "\n------\n";
     }
 
     // Pamięć

@@ -7,6 +7,15 @@ import { Modal } from '../ui/Modal.js';
 export const Chat = {
     // Stan wyszukiwania (domyślnie wyłączony)
     isSearchActive: false,
+    MAX_FILE_SIZE: 2 * 1024 * 1024,
+    ALLOWED_TYPES: ['text/plain', 'text/markdown', 'text/x-markdown', 'application/json', 'text/csv'],
+
+    isFileAllowed(file) {
+        if (!file) return true;
+        if (file.size > Chat.MAX_FILE_SIZE) return false;
+        if (!file.type) return true; // Niektóre przeglądarki nie podają typu; waliduje backend
+        return Chat.ALLOWED_TYPES.includes(file.type);
+    },
 
     // NOWA FUNKCJA: Przełącznik
     toggleSearch: () => {
@@ -102,6 +111,11 @@ export const Chat = {
 
     handleFile: (input) => { /* ... bez zmian ... */
         if (input.files[0]) {
+            if (!Chat.isFileAllowed(input.files[0])) {
+                Toasts.show('Plik jest zbyt duży lub ma nieobsługiwany format (dozwolone: TXT/MD/JSON/CSV, max 2MB).', 'error');
+                Chat.clearFile();
+                return;
+            }
             const preview = document.getElementById('file-preview');
             const nameEl = document.getElementById('filename');
             if(preview && nameEl) { preview.classList.remove('hidden'); nameEl.innerText = input.files[0].name; }
@@ -123,6 +137,12 @@ export const Chat = {
         const file = fileEl ? fileEl.files[0] : null;
 
         if (!txt && !file) return;
+
+        if (file && !Chat.isFileAllowed(file)) {
+            Toasts.show('Plik jest zbyt duży lub ma nieobsługiwany format (dozwolone: TXT/MD/JSON/CSV, max 2MB).', 'error');
+            Chat.clearFile();
+            return;
+        }
 
         Chat.renderMessage('user', txt + (file ? ` [Plik: ${file.name}]` : ''));
         if(inputEl) inputEl.value = '';
@@ -151,6 +171,7 @@ export const Chat = {
             const res = await fetch(`${CONFIG.API_URL}?action=chat`, { method: 'POST', body: formData });
             const reader = res.body.getReader();
             const decoder = new TextDecoder();
+            let halted = false;
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
@@ -178,13 +199,48 @@ export const Chat = {
                             searchNotices += `> ⚠️ ${d.msg || 'Błąd wyszukiwania.'}\n\n`;
                             if (botBubble) botBubble.innerHTML = Render.markdown(searchNotices + botText || '<span class="animate-pulse">Analizuję...</span>');
                         }
+                        else if (d.status === 'file_error') {
+                            halted = true;
+                            const warn = d.msg || 'Plik został odrzucony (format/rozmiar).';
+                            searchNotices += `> ⚠️ ${warn}\n\n`;
+                            if (botBubble) botBubble.innerHTML = Render.markdown(searchNotices || warn);
+                            Toasts.show(warn, 'error');
+                            break;
+                        }
                     } catch (e) { }
                 }
+                if (halted) break;
             }
             if (botBubble && Render.highlightBlock) Render.highlightBlock(botBubble);
             if (box) box.scrollTop = box.scrollHeight;
         } catch (e) {
             if (botBubble) botBubble.innerHTML = '<span class="text-red-400">Błąd połączenia.</span>';
+        }
+    },
+
+    download: async () => {
+        const sid = Store.get('currentSession');
+        if (!sid) { Toasts.show('Brak rozmowy do pobrania.', 'error'); return; }
+
+        try {
+            const res = await fetch(`${CONFIG.API_URL}?action=get_chat_history&session_id=${sid}`, { headers: {'Authorization': Store.get('token')} });
+            if (!res.ok) throw new Error('Nie udało się pobrać historii.');
+            const d = await res.json();
+            const history = d.history || [];
+            if (!history.length) { Toasts.show('Historia jest pusta.', 'error'); return; }
+
+            const lines = history.map(h => `${h.role === 'assistant' ? 'AI' : 'Użytkownik'}: ${h.content}`);
+            const blob = new Blob([lines.join('\n\n')], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'chat.txt';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+        } catch (e) {
+            Toasts.show(e.message || 'Błąd podczas pobierania rozmowy.', 'error');
         }
     }
 };
