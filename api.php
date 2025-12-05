@@ -1,16 +1,10 @@
 <?php
 // --- KONFIGURACJA GŁÓWNA ---
-
-// 1. CZAS WYKONANIA (CRITICAL FIX)
-set_time_limit(900); 
+set_time_limit(900);
 ini_set('max_execution_time', 900);
-
-// 2. STREAMING (Wyłączamy buforowanie)
 ini_set('output_buffering', 'off');
 ini_set('zlib.output_compression', false);
 ini_set('implicit_flush', 1);
-
-// 3. UKRYWANIE BŁĘDÓW PHP (Żeby nie psuły JSON)
 error_reporting(0);
 ini_set('display_errors', 0);
 
@@ -19,16 +13,12 @@ $TAVILY_KEY = "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";
 $DATA_DIR = __DIR__ . '/data';
 $MEMORY_LIMIT = 20000;
 $PROJECT_LIMIT = 2;
-$RETENTION_DAYS = 30;
 
-// CORS
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: POST, GET, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { exit(0); }
-
-// Inicjalizacja folderu
 if (!file_exists($DATA_DIR)) { mkdir($DATA_DIR, 0755, true); }
 
 // --- HELPERY ---
@@ -37,8 +27,7 @@ function get_json($filename) {
     $path = $DATA_DIR . '/' . basename($filename);
     if (file_exists($path)) {
         $content = file_get_contents($path);
-        $json = json_decode($content, true);
-        return is_array($json) ? $json : [];
+        return json_decode($content, true) ?: [];
     }
     return [];
 }
@@ -49,7 +38,6 @@ function save_json($filename, $data) {
 }
 
 function send_json($data) {
-    // Czyścimy bufor przed wysłaniem JSON (Fix dla Memory)
     while (ob_get_level()) { ob_end_clean(); }
     header('Content-Type: application/json; charset=utf-8');
     echo json_encode($data, JSON_UNESCAPED_UNICODE);
@@ -61,44 +49,63 @@ function send_error($msg, $code = 400) {
     send_json(['error' => $msg]);
 }
 
+// 1. Tavily (Szukanie ogólne)
 function search_tavily($query, $api_key) {
     $ch = curl_init('https://api.tavily.com/search');
     $data = json_encode([
-        'api_key' => $api_key, 
-        'query' => $query, 
-        'search_depth' => 'basic', 
-        'include_answer' => true, 
-        'max_results' => 5 
+        'api_key' => $api_key,
+        'query' => $query,
+        'search_depth' => 'advanced',
+        'include_answer' => true,
+        'max_results' => 5
     ]);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_POST, true);
     curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
     curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-    
-    // FIX SSL: Wyłączamy sprawdzanie certyfikatów (dla pewności na tanich hostingach)
     curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
     curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
     
     $response = curl_exec($ch);
-    $error = curl_error($ch); // Łapiemy błąd połączenia
     $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
 
-    if ($error) {
-        return ['error' => "cURL Error: $error"];
-    }
-    if ($http_code !== 200) {
-        return ['error' => "API Error: $http_code. Response: $response"];
-    }
-
+    if ($http_code !== 200) return ['error' => "API Error: $http_code"];
     return json_decode($response, true) ?? ['results' => []];
+}
+
+// 2. Simple Scraper (Wchodzenie w linki bezpośrednio)
+function simple_scrape($url) {
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 1);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+    // Udajemy przeglądarkę, żeby nas nie zablokowali
+    curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
+    
+    $html = curl_exec($ch);
+    $error = curl_error($ch);
+    curl_close($ch);
+
+    if ($error || empty($html)) return false;
+
+    // Czyścimy HTML do samego tekstu
+    $html = preg_replace('/<script\b[^>]*>(.*?)<\/script>/is', "", $html);
+    $html = preg_replace('/<style\b[^>]*>(.*?)<\/style>/is', "", $html);
+    $text = strip_tags($html);
+    $text = preg_replace('/\s+/', ' ', $text); // Usuń nadmiar spacji
+    
+    return mb_substr(trim($text), 0, 15000); // Limit znaków dla modelu
 }
 
 // --- LOGIKA ENDPOINTÓW ---
 $action = $_GET['action'] ?? '';
 $input = json_decode(file_get_contents('php://input'), true);
 
-// 1. AUTH
+// Auth & Users
 if ($action === 'register') {
     $users = get_json('users.json');
     $u = strtolower(trim($input['username'] ?? ''));
@@ -125,28 +132,25 @@ if ($action === 'login') {
     }
 }
 
-// MIDDLEWARE
+// Middleware
 $headers = getallheaders();
 $token = $headers['Authorization'] ?? ($_POST['token'] ?? '');
 $sessions = get_json('sessions_auth.json');
 
-// Wyjątek dla options
 if ($action !== 'chat' && !isset($sessions[$token])) send_error('Auth fail', 401);
 
-// Dla chatu pobieramy usera ręcznie bo to POST form-data
 if ($action === 'chat' && isset($_POST['token'])) {
     if(!isset($sessions[$_POST['token']])) send_error('Auth fail', 401);
     $current_user = $sessions[$_POST['token']];
-    $should_search = preg_match('/(cena|kurs|news|szukaj|kto|co|gdzie|kiedy|jak|dlaczego|wydarzenia|znajdź|research|pogoda|aktualne|wiedza|statystyki|ile|czy|brand|firma|opinia)/i', $message);
 } else {
     $current_user = $sessions[$token] ?? '';
 }
 
-// 2. PROJEKTY
+// Projekty & Pamięć
 if ($action === 'get_projects') {
     $projs = get_json("projects_{$current_user}.json");
     if (empty($projs)) {
-        $projs = [['id' => uniqid('p_'), 'name' => 'Projekt Domyślny']];
+        $projs = [['id' => uniqid('p_'), 'name' => 'Start']];
         save_json("projects_{$current_user}.json", $projs);
     }
     send_json(['projects' => $projs]);
@@ -155,18 +159,15 @@ if ($action === 'get_projects') {
 if ($action === 'create_project') {
     $projs = get_json("projects_{$current_user}.json");
     if (count($projs) >= $PROJECT_LIMIT) send_error("Limit max $PROJECT_LIMIT projekty.");
-    $name = $input['name'] ?? 'Nowy Projekt';
     $new_id = uniqid('p_');
-    $projs[] = ['id' => $new_id, 'name' => $name];
+    $projs[] = ['id' => $new_id, 'name' => $input['name'] ?? 'Nowy'];
     save_json("projects_{$current_user}.json", $projs);
-    send_json(['id' => $new_id, 'name' => $name]);
+    send_json(['id' => $new_id, 'name' => $input['name']]);
 }
 
-// 3. PAMIĘĆ
 if ($action === 'get_memory') {
     $pid = $_GET['project_id'] ?? 'default';
     $mem = get_json("mem_{$current_user}_{$pid}.json");
-    if (!is_array($mem)) $mem = [];
     $percent = $MEMORY_LIMIT > 0 ? min(100, intval((strlen(json_encode($mem)) / $MEMORY_LIMIT) * 100)) : 0;
     send_json(['data' => $mem, 'usage' => $percent, 'limit' => $MEMORY_LIMIT]);
 }
@@ -176,26 +177,19 @@ if ($action === 'update_memory') {
     $key = $input['key'];
     $val = $input['value'] ?? '';
     $act = $input['act'] ?? 'update';
-    
     $file = "mem_{$current_user}_{$pid}.json";
     $mem = get_json($file);
-    if (!is_array($mem)) $mem = [];
-    
     if ($act === 'delete') {
         if (isset($mem[$key])) unset($mem[$key]);
     } else {
-        $temp = $mem; $temp[$key] = $val;
-        if (strlen(json_encode($temp)) > $MEMORY_LIMIT) send_error('Limit pamięci!');
         $mem[$key] = $val;
     }
     save_json($file, $mem);
     send_json(['status' => 'ok']);
 }
 
-// 4. SESJE
 if ($action === 'get_sessions') {
     $pid = $_GET['project_id'] ?? '';
-    if (!$pid) send_json([]);
     $sessions = get_json("sessions_list_{$current_user}_{$pid}.json");
     usort($sessions, fn($a, $b) => strcmp($b['updated_at'] ?? '', $a['updated_at'] ?? ''));
     send_json(['sessions' => $sessions]);
@@ -216,100 +210,95 @@ if ($action === 'delete_session') {
     send_json(['status' => 'ok']);
 }
 
+// --- GŁÓWNA LOGIKA CHATU ---
 if ($action === 'chat') {
-    // Czyścimy wszystko, żeby stream nie miał śmieci
     while (ob_get_level()) { ob_end_clean(); }
-    
     header('Content-Type: application/x-ndjson');
-    header('X-Accel-Buffering: no'); // Dla Nginx
+    header('X-Accel-Buffering: no');
     
     $message = $_POST['message'] ?? '';
     $project_id = $_POST['project_id'] ?? 'default';
-    $session_id = $_POST['session_id'] ?? '';
-    $is_new_session = empty($session_id);
+    $session_id = $_POST['session_id'] ?? uniqid('s_');
+    $is_new_session = !file_exists($DATA_DIR . "/chat_{$current_user}_{$session_id}.json");
 
-    if ($is_new_session) $session_id = uniqid('s_');
+    echo json_encode(['status' => 'ping']) . "\n"; flush();
+    if ($is_new_session) { echo json_encode(['status' => 'session_init', 'id' => $session_id]) . "\n"; flush(); }
 
-    // Ping początkowy
-    echo json_encode(['status' => 'ping']) . "\n";
-    flush();
-
-    if ($is_new_session) {
-        echo json_encode(['status' => 'session_init', 'id' => $session_id]) . "\n";
-        flush();
-    }
-
-    // Załącznik
+    // Plik
     $file_content = "";
     if (isset($_FILES['file']) && $_FILES['file']['error'] === UPLOAD_ERR_OK) {
-        $file_content = "\n\n--- PLIK: {$_FILES['file']['name']} ---\n" . file_get_contents($_FILES['file']['tmp_name']) . "\n------\n";
+        $file_content = "\n\n--- ZAŁĄCZNIK: {$_FILES['file']['name']} ---\n" . file_get_contents($_FILES['file']['tmp_name']) . "\n------\n";
     }
 
-    // Kontekst pamięci
+    // Pamięć
     $mem = get_json("mem_{$current_user}_{$project_id}.json");
-    $memory_context_str = "CONTEXT:\n";
+    $memory_context_str = "MEMORY CONTEXT:\n";
     foreach ($mem as $k => $v) { $memory_context_str .= "- {$k}: {$v}\n"; }
 
-    // --- LOGIKA WYSZUKIWANIA (Sterowana przyciskiem) ---
-    // Odbieramy flagę '1' (włączony) lub '0' (wyłączony) z JS
-    $use_search_flag = $_POST['use_search'] ?? '0'; 
-    $should_search = ($use_search_flag === '1');
+    // --- DETEKCJA URL I SCRAPING ---
+    $url_context = "";
+    $scraped_success = false;
     
+    // Szukamy URL w wiadomości
+    if (preg_match('/\bhttps?:\/\/[^\s]+/', $message, $matches)) {
+        $url_to_scrape = $matches[0];
+        echo json_encode(['status' => 'searching', 'msg' => 'Pobieram treść strony...']) . "\n"; flush();
+        
+        $scraped_content = simple_scrape($url_to_scrape);
+        if ($scraped_content) {
+            $url_context = "\n\n=== TREŚĆ POBRANA ZE STRONY ($url_to_scrape) ===\n$scraped_content\n=====================================\n";
+            $scraped_success = true;
+        }
+    }
+
+    // --- LOGIKA TAVILY (Jeśli nie scrapujemy lub user wymusił szukanie) ---
+    $manual_search = ($_POST['use_search'] ?? '0') === '1';
     $internet_context = "";
-    
-    if ($should_search) {
-        echo json_encode(['status' => 'searching']) . "\n"; flush();
-        
+
+    // Jeśli nie udało się pobrać strony (lub nie było URL), a user chce szukać:
+    if (($manual_search || preg_match('/(cena|kto|gdzie|kiedy|news)/i', $message)) && !$scraped_success) {
+        echo json_encode(['status' => 'searching', 'msg' => 'Szukam w sieci...']) . "\n"; flush();
         $tavily_res = search_tavily($message, $TAVILY_KEY);
-        
-        if (isset($tavily_res['error'])) {
-             $internet_context = "\n\n[SYSTEM ERROR]: Nie udało się przeszukać sieci. Przyczyna: " . $tavily_res['error'];
-        } else {
-            $internet_context = "\n\n=== WYNIKI WYSZUKIWANIA (Tryb Online Aktywny) ===\n";
-            // Dodajemy gotową odpowiedź od Tavily jeśli jest
-            if (!empty($tavily_res['answer'])) {
-                $internet_context .= "SZYBKIE PODSUMOWANIE: " . $tavily_res['answer'] . "\n\n";
-            }
-            // Lista wyników
+        if (!isset($tavily_res['error'])) {
+            $internet_context = "\n\n=== WYNIKI WYSZUKIWANIA ===\n";
             if (!empty($tavily_res['results'])) {
                 foreach ($tavily_res['results'] as $r) {
-                    $internet_context .= "SOURCE: [{$r['title']}]({$r['url']})\nCONTENT: {$r['content']}\n---\n";
+                    $internet_context .= "URL: {$r['url']}\nTITLE: {$r['title']}\nCONTENT: {$r['content']}\n---\n";
                 }
             } else {
-                 $internet_context .= "Brak wyników w API dla tego zapytania.\n";
+                $internet_context .= "Brak wyników.\n";
             }
         }
     }
 
-    // System Prompt
-    $system_prompt = "Jesteś Brand OS (Rafi Core). Priorytet: zwięzłość i sens. \n\n" .
-                     "1. Masz dostęp do KONTEKSTU marki - używaj go.\n" .
-                     "2. Jeśli otrzymasz WYNIKI WYSZUKIWANIA (Tryb Online) - są one nadrzędne wobec twojej wiedzy treningowej. Cytuj źródła.\n" .
-                     "3. Jeśli użytkownik nie włączył trybu online (brak wyników), opieraj się na swojej wiedzy i pamięci.\n\n" . 
+    // Prompt
+    $system_prompt = "Jesteś Brand OS (Rafi Core). Dziś: " . date('Y-m-d') . ".\n" .
+                     "1. Masz dostęp do KONTEKSTU (Pamięć, Internet, Treść Strony).\n" .
+                     "2. JEŚLI WIDZISZ 'TREŚĆ POBRANĄ ZE STRONY' -> TO JEST PRAWDA OSTATECZNA. Opieraj się na niej.\n" .
+                     "3. Bądź konkretny i techniczny.\n\n" . 
                      $memory_context_str;
 
-    $messages_for_api = [['role' => 'system', 'content' => $system_prompt]];
-
+    $messages = [['role' => 'system', 'content' => $system_prompt]];
+    
     // Historia
     $chat_history = get_json("chat_{$current_user}_{$session_id}.json");
-    $recent = array_slice($chat_history, -6);
-    foreach ($recent as $h) { $messages_for_api[] = ['role' => $h['role'], 'content' => $h['content']]; }
+    foreach (array_slice($chat_history, -6) as $h) { $messages[] = ['role' => $h['role'], 'content' => $h['content']]; }
 
-    $full_msg = $message . $file_content . $internet_context;
-    $messages_for_api[] = ['role' => 'user', 'content' => $full_msg];
+    // Final message construct
+    $final_user_msg = $url_context . $internet_context . "\nUSER QUESTION: " . $message . $file_content;
+    $messages[] = ['role' => 'user', 'content' => $final_user_msg];
 
     // DeepSeek Call
     $ch = curl_init('https://api.deepseek.com/chat/completions');
     curl_setopt($ch, CURLOPT_POST, true);
     curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode([
         'model' => 'deepseek-chat',
-        'messages' => $messages_for_api,
+        'messages' => $messages,
         'stream' => true
     ]));
     curl_setopt($ch, CURLOPT_HTTPHEADER, ["Content-Type: application/json", "Authorization: Bearer $DEEPSEEK_KEY"]);
     
     $full_bot_response = "";
-
     curl_setopt($ch, CURLOPT_WRITEFUNCTION, function($ch, $data) use (&$full_bot_response) {
         $lines = explode("\n", $data);
         foreach ($lines as $line) {
@@ -321,38 +310,33 @@ if ($action === 'chat') {
                 if (isset($json['choices'][0]['delta']['content'])) {
                     $txt = $json['choices'][0]['delta']['content'];
                     $full_bot_response .= $txt;
-                    // Output dla JS
                     echo json_encode(['status' => 'content', 'text' => $txt]) . "\n";
-                    flush(); // WYMUSZENIE WYSŁANIA PAKIETU
+                    flush();
                 }
             }
         }
         return strlen($data);
     });
-
     curl_exec($ch);
     curl_close($ch);
 
-    // Zapisz historię po zakończeniu
     if (!empty($full_bot_response)) {
         $chat_history[] = ['role' => 'user', 'content' => $message . ($file_content ? " [Plik]" : "")];
         $chat_history[] = ['role' => 'assistant', 'content' => $full_bot_response];
         save_json("chat_{$current_user}_{$session_id}.json", $chat_history);
-
-        // Update listy sesji
+        
+        // Update listy
         $list_file = "sessions_list_{$current_user}_{$project_id}.json";
         $sessions_list = get_json($list_file);
         $exists = false;
         foreach ($sessions_list as &$s) {
-            if ($s['id'] === $session_id) { $s['updated_at'] = date('Y-m-d H:i:s'); $exists = true; break; }
+            if ($s['id'] === $session_id) { $s['updated_at'] = date('Y-m-d H:i:s'); $s['title'] = mb_substr($message, 0, 30).'...'; $exists = true; break; }
         }
         if (!$exists) {
-            $title = mb_substr($message, 0, 30) . '...';
-            $sessions_list[] = ['id' => $session_id, 'title' => $title, 'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s')];
+            $sessions_list[] = ['id' => $session_id, 'title' => mb_substr($message, 0, 30).'...', 'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s')];
         }
         save_json($list_file, $sessions_list);
     }
-    
     exit;
 }
 ?>
