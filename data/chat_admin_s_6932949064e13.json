@@ -1,0 +1,10 @@
+[
+    {
+        "role": "user",
+        "content": "sprawdź cenę btc na teraz. na coingecko"
+    },
+    {
+        "role": "assistant",
+        "content": "Aktualna cena Bitcoina (BTC) na CoinGecko to **około 94 020,01 USD** (źródło: [BTC to USD - CoinGecko](https:\/\/www.coingecko.com\/en\/coins\/bitcoin\/usd)).\n\n*Przypominam, że dzisiaj jest czwartek.*"
+    }
+]
