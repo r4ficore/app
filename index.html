@@ -896,22 +896,34 @@
         </div>
 
         <!-- Sekcja: Projekt (ukryta na teraz, zostaje w DOM) -->
-        <div class="px-4 pt-4 pb-2 space-y-2 relative z-10 hidden">
+        <div class="px-4 pt-4 pb-2 space-y-2 relative z-10">
           <div class="text-[10px] font-mono uppercase tracking-[0.2em] text-gray-500">
             Projekt
           </div>
-          <div class="flex gap-2">
+          <div class="flex gap-2 items-center">
             <select
               id="project-select"
-              onchange="BrandOS.Project.switchProject()"
+              onchange="BrandOS.Project.change()"
               class="flex-1 glass-input rounded-lg px-3 py-2 text-[11px] outline-none cursor-pointer"
             ></select>
-            <button
-              onclick="BrandOS.Project.create()"
-              class="bg-blue-600 hover:bg-blue-500 text-black px-3 rounded-lg text-[11px] font-semibold tracking-[0.12em]"
-            >
-              + Nowy
-            </button>
+            <div class="flex gap-1">
+              <button
+                onclick="BrandOS.Project.rename()"
+                class="glass-input px-3 py-2 rounded-lg text-[11px] hover:border-blue-500/50 border border-white/10"
+                title="Zmień nazwę"
+              >✎</button>
+              <button
+                onclick="BrandOS.Project.remove()"
+                class="glass-input px-3 py-2 rounded-lg text-[11px] hover:text-red-400 border border-white/10"
+                title="Usuń projekt"
+              >🗑</button>
+              <button
+                onclick="BrandOS.Project.create()"
+                class="bg-blue-600 hover:bg-blue-500 text-black px-3 rounded-lg text-[11px] font-semibold tracking-[0.12em]"
+              >
+                + Nowy
+              </button>
+            </div>
           </div>
         </div>
 
