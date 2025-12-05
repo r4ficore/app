@@ -13,8 +13,8 @@ $env = function(string $key, $default = '') {
     return ($val !== false && $val !== '') ? $val : $default;
 };
 
-$DEEPSEEK_KEY = $env('DEEPSEEK_KEY', "sk-f5095ebe51da4b30841efe2faf256745");
-$TAVILY_KEY = $env('TAVILY_KEY', "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");
+$DEEPSEEK_KEY = $env('DEEPSEEK_KEY');
+$TAVILY_KEY = $env('TAVILY_KEY');
 $DATA_DIR = rtrim($env('DATA_DIR', __DIR__ . '/data'), '/');
 $MEMORY_LIMIT = 20000;
 $PROJECT_LIMIT = 2;
@@ -29,6 +29,14 @@ header("Access-Control-Allow-Headers: Content-Type, Authorization");
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { exit(0); }
 if (!file_exists($DATA_DIR)) { mkdir($DATA_DIR, 0755, true); }
+
+$missing_keys = [];
+if (empty($DEEPSEEK_KEY)) { $missing_keys[] = 'DEEPSEEK_KEY'; }
+if (empty($TAVILY_KEY)) { $missing_keys[] = 'TAVILY_KEY'; }
+if (!empty($missing_keys)) {
+    http_response_code(500);
+    send_json(['error' => 'Brak wymaganych kluczy API: ' . implode(', ', $missing_keys)]);
+}
 
 // --- HELPERY ---
 function get_json($filename) {
@@ -99,14 +107,12 @@ function build_tavily_query(string $message): string {
 
     if (preg_match('/\bhttps?:\/\/[^\s]+/i', $trimmed, $matches)) {
         $url = $matches[0];
-        $without_url = trim(str_replace($url, '', $trimmed));
-        $host = parse_url($url, PHP_URL_HOST) ?: $url;
-
-        if (!empty($without_url)) {
-            return $without_url . " (źródło: {$host})";
+        if ($trimmed !== $url) {
+            return $trimmed;
         }
 
-        return "Najważniejsze informacje ze strony {$host} ({$url})";
+        $host = parse_url($url, PHP_URL_HOST) ?: $url;
+        return "Najważniejsze informacje i aktualności ze strony {$host} ({$url})";
     }
 
     return $trimmed;
@@ -345,6 +351,7 @@ if ($action === 'chat') {
 
     // --- DETEKCJA URL I SCRAPING ---
     $url_context = "";
+    $internet_context = "";
     $scraped_success = false;
     
     // Szukamy URL w wiadomości
@@ -377,7 +384,7 @@ if ($action === 'chat') {
                     $internet_context .= "URL: {$r['url']}\nTITLE: {$r['title']}\nCONTENT: {$r['content']}\n---\n";
                 }
             } else {
-                $internet_context .= "Brak wyników.\n";
+                $internet_context .= "Brak wyników. Nie używaj wiedzy treningowej do faktów czasowych.\n";
             }
         } else {
             echo json_encode(['status' => 'search_error', 'msg' => $tavily_res['error']]) . "\n"; flush();
@@ -410,6 +417,7 @@ Nie bawisz się w uprzejmości AI. Działasz jak analityczny partner biznesowy.
 - **Styl:** Zwięzły, techniczny, "żołnierski". Bez lania wody.
 - **Kod:** Jeśli piszesz kod, ma być gotowy do wdrożenia (production-ready). Używaj bloków ```language.
 - **Źródła online:** Jeśli dostępna jest sekcja "TREŚĆ POBRANA ZE STRONY" lub "WYNIKI WYSZUKIWANIA", opieraj się na nich w pierwszej kolejności i zawsze podawaj źródło w nawiasie kwadratowym (np. [example.com] lub [źródło: domena]).
+- **Źródła online:** Jeśli dostępna jest sekcja "TREŚĆ POBRANA ZE STRONY" lub "WYNIKI WYSZUKIWANIA", opieraj się na nich w pierwszej kolejności i zawsze podawaj źródło w nawiasie kwadratowym (np. [example.com] lub [źródło: domena]). Jeśli sekcja "WYNIKI WYSZUKIWANIA" zawiera komunikat o braku wyników, powiedz to wprost i nie korzystaj z wiedzy treningowej do podawania faktów czasowych.
 - **Brak wiedzy:** Jeśli czegoś nie ma w wynikach wyszukiwania ani na stronie, powiedz wprost: "Brak danych w źródłach". Nie halucynuj i nie dopowiadaj.
 - **Sprzeczności:** W przypadku konfliktu między treningiem a danymi z sieci/strony, wybieraj dane z sieci/strony. W przypadku sprzeczności między różnymi wynikami online, wskaż to i zaznacz brak pewności.
 - **Formatowanie:** Używaj pogrubień (**kluczowe wnioski**) i list wypunktowanych dla czytelności.
@@ -439,8 +447,9 @@ EOT;
         'stream' => true
     ]));
     curl_setopt($ch, CURLOPT_HTTPHEADER, ["Content-Type: application/json", "Authorization: Bearer $DEEPSEEK_KEY"]);
-    
+
     $full_bot_response = "";
+    $curl_error = "";
     curl_setopt($ch, CURLOPT_WRITEFUNCTION, function($ch, $data) use (&$full_bot_response) {
         $lines = explode("\n", $data);
         foreach ($lines as $line) {
@@ -459,26 +468,46 @@ EOT;
         }
         return strlen($data);
     });
-    curl_exec($ch);
+
+    $execResult = curl_exec($ch);
+    if ($execResult === false) {
+        $curl_error = curl_error($ch);
+    }
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
 
-    if (!empty($full_bot_response)) {
-        $chat_history[] = ['role' => 'user', 'content' => $message . ($file_content ? " [Plik]" : "")];
-        $chat_history[] = ['role' => 'assistant', 'content' => $full_bot_response];
-        save_json("chat_{$current_user}_{$session_id}.json", $chat_history);
-        
-        // Update listy
-        $list_file = "sessions_list_{$current_user}_{$project_id}.json";
-        $sessions_list = get_json($list_file);
-        $exists = false;
-        foreach ($sessions_list as &$s) {
-            if ($s['id'] === $session_id) { $s['updated_at'] = date('Y-m-d H:i:s'); $s['title'] = mb_substr($message, 0, 30).'...'; $exists = true; break; }
-        }
-        if (!$exists) {
-            $sessions_list[] = ['id' => $session_id, 'title' => mb_substr($message, 0, 30).'...', 'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s')];
-        }
-        save_json($list_file, $sessions_list);
+    if (!empty($curl_error)) {
+        echo json_encode(['status' => 'llm_error', 'msg' => 'Błąd połączenia z modelem: ' . $curl_error]) . "\n"; flush();
+        exit;
     }
+
+    if ($httpCode >= 400) {
+        echo json_encode(['status' => 'llm_error', 'msg' => "Model zwrócił błąd HTTP {$httpCode}"]) . "\n"; flush();
+        exit;
+    }
+
+    if (empty($full_bot_response)) {
+        echo json_encode(['status' => 'llm_error', 'msg' => 'Model nie zwrócił żadnej treści.']) . "\n"; flush();
+        exit;
+    }
+
+    $chat_history[] = ['role' => 'user', 'content' => $message . ($file_content ? " [Plik]" : "")];
+    $chat_history[] = ['role' => 'assistant', 'content' => $full_bot_response];
+    save_json("chat_{$current_user}_{$session_id}.json", $chat_history);
+
+    // Update listy
+    $list_file = "sessions_list_{$current_user}_{$project_id}.json";
+    $sessions_list = get_json($list_file);
+    $exists = false;
+    foreach ($sessions_list as &$s) {
+        if ($s['id'] === $session_id) { $s['updated_at'] = date('Y-m-d H:i:s'); $s['title'] = mb_substr($message, 0, 30).'...'; $exists = true; break; }
+    }
+    if (!$exists) {
+        $sessions_list[] = ['id' => $session_id, 'title' => mb_substr($message, 0, 30).'...', 'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s')];
+    }
+    save_json($list_file, $sessions_list);
+
+    echo json_encode(['status' => 'done', 'session_id' => $session_id]) . "\n"; flush();
     exit;
 }
 ?>
