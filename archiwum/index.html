@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Brand OS</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Inter', 'sans-serif'] },
+                    colors: {
+                        glass: {
+                            100: 'rgba(255, 255, 255, 0.03)',
+                            200: 'rgba(255, 255, 255, 0.05)',
+                            300: 'rgba(255, 255, 255, 0.1)',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { background: #000000; color: #e2e8f0; }
+        /* Tło "Deep Space" */
+        .deep-bg {
+            background-color: #050505;
+            background-image: 
+                radial-gradient(at 0% 0%, rgba(56, 189, 248, 0.1) 0px, transparent 50%),
+                radial-gradient(at 100% 0%, rgba(99, 102, 241, 0.1) 0px, transparent 50%);
+        }
+        
+        .glass-panel {
+            background: rgba(20, 20, 25, 0.7);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .glass-input {
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: white;
+            transition: all 0.2s;
+        }
+        .glass-input:focus {
+            border-color: rgba(59, 130, 246, 0.5);
+            background: rgba(0, 0, 0, 0.6);
+            box-shadow: 0 0 15px rgba(59, 130, 246, 0.1);
+        }
+
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+
+        .active-session { 
+            background: rgba(59, 130, 246, 0.15); 
+            border-left: 2px solid #60a5fa;
+            color: white;
+        }
+
+        /* Markdown Styles */
+        .prose h1, .prose h2, .prose h3 { color: #f8fafc; font-weight: 600; margin-top: 1em; margin-bottom: 0.5em; }
+        .prose p { margin-bottom: 0.8em; line-height: 1.6; color: #cbd5e1; }
+        .prose ul { list-style-type: disc; padding-left: 1.5em; margin-bottom: 0.8em; }
+        .prose strong { color: #fff; font-weight: 600; }
+        .prose code { background: rgba(255,255,255,0.1); padding: 0.2em 0.4em; rounded: 4px; font-size: 0.9em; color: #e2e8f0; }
+        .prose pre { background: #0f172a; padding: 1em; border-radius: 8px; overflow-x: auto; border: 1px solid rgba(255,255,255,0.1); }
+        .prose blockquote { border-left: 3px solid #3b82f6; padding-left: 1em; color: #94a3b8; font-style: italic; }
+    </style>
+</head>
+<body class="h-screen flex overflow-hidden relative deep-bg font-sans selection:bg-blue-500/30">
+
+    <div id="toast-container" class="fixed top-5 right-5 z-[200] flex flex-col gap-2 pointer-events-none"></div>
+
+    <div id="confirm-modal" class="hidden fixed inset-0 z-[150] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+        <div class="glass-panel p-6 rounded-xl w-full max-w-sm border border-red-500/20 shadow-2xl transform scale-100">
+            <h3 class="text-lg font-bold text-white mb-2">Potwierdzenie</h3>
+            <p id="confirm-text" class="text-gray-400 mb-6 text-sm">Czy na pewno?</p>
+            <div class="flex justify-end gap-3">
+                <button onclick="closeConfirm(false)" class="px-4 py-2 text-gray-400 hover:text-white text-sm transition">Anuluj</button>
+                <button id="confirm-btn-yes" class="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded text-sm shadow-lg shadow-red-900/20 transition">Usuń</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="auth-screen" class="fixed inset-0 bg-black z-[100] flex items-center justify-center p-4 deep-bg">
+        <div class="glass-panel p-10 rounded-2xl shadow-2xl w-full max-w-md border-t border-white/10">
+            <div class="text-center mb-8">
+                <div class="inline-block p-3 rounded-full bg-blue-500/10 mb-3">
+                    <span class="text-2xl">⚡</span>
+                </div>
+                <h2 class="text-3xl font-bold text-white tracking-tight">BRAND OS</h2>
+                <p class="text-gray-500 text-sm mt-1">System operacyjny Twojej marki</p>
+            </div>
+            
+            <form onsubmit="handleLogin(); return false;" class="space-y-4">
+                <input id="login-user" type="text" placeholder="Login" class="w-full glass-input rounded-lg p-3 outline-none placeholder-gray-600">
+                <input id="login-pass" type="password" placeholder="Hasło" class="w-full glass-input rounded-lg p-3 outline-none placeholder-gray-600">
+                <button type="submit" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-3 rounded-lg transition shadow-lg shadow-blue-900/30">Wejdź do systemu</button>
+            </form>
+            <p class="text-center mt-6 text-gray-500 hover:text-blue-400 cursor-pointer text-xs transition" onclick="handleRegister()">Brak konta? Zarejestruj się</p>
+        </div>
+    </div>
+
+    <div id="app-screen" class="hidden flex w-full h-full">
+        
+        <div class="w-72 glass-panel border-r-0 border-r border-white/5 flex flex-col flex-shrink-0 z-20">
+            <div class="p-5 border-b border-white/5">
+                <label class="text-[10px] text-gray-500 uppercase font-bold tracking-widest mb-2 block">Obszar Roboczy</label>
+                <div class="flex gap-2">
+                    <select id="project-select" onchange="changeProject()" class="flex-1 glass-input text-sm rounded-lg p-2 outline-none cursor-pointer appearance-none px-3 hover:bg-white/5">
+                        <option>Ładowanie...</option>
+                    </select>
+                    <button onclick="createProject()" class="glass-input hover:bg-white/10 px-3 rounded-lg text-gray-300 transition" title="Nowy Projekt">+</button>
+                </div>
+            </div>
+
+            <div class="px-5 py-4">
+                <button onclick="startNewChat()" class="group w-full bg-white/5 hover:bg-white/10 border border-white/5 hover:border-blue-500/30 text-white py-2.5 rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition-all shadow-lg">
+                    <span class="text-blue-400 group-hover:text-blue-300">+</span> Nowa Sesja
+                </button>
+            </div>
+
+            <div class="flex-1 overflow-y-auto px-3 space-y-1 py-2" id="sessions-list"></div>
+            
+            <div class="p-4 border-t border-white/5 text-[10px] text-gray-600 flex justify-between items-center">
+                <span>Retencja: 30 dni</span>
+                <button onclick="logout()" class="hover:text-red-400 transition uppercase tracking-wider">Wyloguj</button>
+            </div>
+        </div>
+
+        <div class="flex-1 flex flex-col relative z-10">
+            <div class="h-16 border-b border-white/5 flex items-center justify-between px-8 glass-panel z-20">
+                <div class="flex items-center gap-3">
+                    <div class="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.5)]"></div>
+                    <div class="font-medium text-gray-200 truncate max-w-[300px]" id="current-chat-title">Nowa rozmowa</div>
+                </div>
+                
+                <div class="flex gap-3">
+                    <button onclick="downloadChat()" class="text-xs bg-white/5 hover:bg-white/10 text-gray-300 border border-white/10 px-4 py-2 rounded-lg transition" title="Pobierz historię">
+                        ⬇️ TXT
+                    </button>
+
+                    <button onclick="toggleMemoryPanel()" class="text-xs bg-blue-500/10 hover:bg-blue-500/20 text-blue-300 border border-blue-500/20 px-4 py-2 rounded-lg transition flex gap-2 items-center group">
+                        🧠 Pamięć <span id="mem-badge" class="bg-blue-500 text-white px-1.5 py-0.5 rounded text-[10px] group-hover:bg-blue-400 transition">0%</span>
+                    </button>
+                </div>
+            </div>
+
+            <div id="chat-box" class="flex-1 overflow-y-auto p-4 md:p-10 space-y-8 scroll-smooth">
+                <div class="flex flex-col items-center justify-center h-full text-gray-700 space-y-4 opacity-60">
+                    <div class="text-4xl animate-pulse">✨</div>
+                    <p class="text-sm tracking-wide">SYSTEM GOTOWY. ROZPOCZNIJ PRACĘ.</p>
+                </div>
+            </div>
+
+            <div class="p-6 md:p-8 pt-0 z-20 relative">
+                <div id="file-preview" class="hidden absolute -top-10 left-8 px-3 py-1.5 bg-blue-900/40 backdrop-blur border border-blue-500/30 rounded-lg text-xs text-blue-200 flex items-center gap-2 shadow-lg">
+                    <span id="filename">plik.txt</span> 
+                    <button onclick="clearFile()" class="hover:text-white ml-1">✕</button>
+                </div>
+
+                <form id="chat-form" class="relative max-w-4xl mx-auto group">
+                    <div class="absolute inset-0 bg-blue-500/5 rounded-xl blur-xl group-hover:bg-blue-500/10 transition duration-500"></div>
+                    <div class="relative flex items-end gap-2 bg-[#0f1115] border border-white/10 rounded-xl p-2 shadow-2xl focus-within:border-blue-500/30 focus-within:ring-1 focus-within:ring-blue-500/30 transition-all">
+                        
+                        <label class="cursor-pointer p-3 text-gray-500 hover:text-blue-400 transition rounded-lg hover:bg-white/5 flex-shrink-0">
+                            <input type="file" id="file-input" class="hidden" onchange="handleFile(this)">
+                            <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
+                        </label>
+                        
+                        <input id="msg-input" type="text" autocomplete="off" class="w-full bg-transparent text-gray-100 placeholder-gray-600 px-2 py-3 outline-none font-medium" placeholder="W czym mogę pomóc?">
+                        
+                        <button type="submit" class="p-3 bg-blue-600 hover:bg-blue-500 text-white rounded-lg shadow-lg shadow-blue-900/20 transition-all hover:scale-105 flex-shrink-0">
+                            <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"></path></svg>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div id="memory-panel" class="fixed right-0 top-0 h-full w-96 glass-panel border-l border-white/10 flex flex-col transform translate-x-full transition-transform duration-300 z-50 shadow-[0_0_50px_rgba(0,0,0,0.5)]">
+            <div class="p-5 border-b border-white/5 flex justify-between items-center bg-white/5">
+                <h3 class="font-semibold text-white tracking-wide text-sm flex items-center gap-2">
+                    <span class="text-blue-400">⚡</span> KONTEKST PROJEKTU
+                </h3>
+                <button onclick="toggleMemoryPanel()" class="text-gray-500 hover:text-white transition">✕</button>
+            </div>
+            
+            <div class="p-5">
+                <div class="flex justify-between text-[10px] text-gray-400 mb-2 uppercase tracking-wider font-bold">
+                    <span>Zajętość Pamięci</span>
+                    <span id="mem-percent" class="text-blue-400">0%</span>
+                </div>
+                <div class="w-full bg-white/5 h-1.5 rounded-full overflow-hidden">
+                    <div id="mem-bar" class="bg-gradient-to-r from-blue-600 to-purple-600 h-full w-0 transition-all duration-500"></div>
+                </div>
+            </div>
+
+            <div id="memory-list" class="flex-1 overflow-y-auto p-5 space-y-3"></div>
+            
+            <div class="p-5 border-t border-white/5 bg-black/20">
+                <button onclick="openMemModal()" class="w-full py-3 border border-dashed border-white/10 text-gray-400 text-xs hover:text-blue-400 hover:border-blue-500/30 transition rounded-lg uppercase tracking-widest">+ Dodaj Wiedzę</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="mem-modal" class="hidden fixed inset-0 bg-black/80 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
+        <div class="glass-panel rounded-xl w-full max-w-lg p-6 border border-white/10 shadow-2xl">
+            <h3 class="font-bold mb-6 text-white text-lg">Edycja Wiedzy</h3>
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-xs text-gray-500 mb-1">KLUCZ (Unikalny identyfikator)</label>
+                    <input id="mem-key" class="w-full glass-input rounded-lg p-2.5 text-sm outline-none" placeholder="np. TONE_OF_VOICE">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-500 mb-1">WARTOŚĆ (Treść kontekstu)</label>
+                    <textarea id="mem-val" class="w-full glass-input rounded-lg p-2.5 text-sm outline-none h-40 resize-none leading-relaxed" placeholder="Wpisz tutaj szczegóły..."></textarea>
+                </div>
+            </div>
+            <div class="flex justify-end gap-3 mt-6">
+                <button onclick="closeMemModal()" class="px-4 py-2 text-gray-400 hover:text-white text-sm transition">Anuluj</button>
+                <button onclick="saveMem()" class="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-medium shadow-lg shadow-blue-900/20">Zapisz</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'api.php';
+        let TOKEN = localStorage.getItem('token');
+        let CURRENT_PROJECT = null;
+        let CURRENT_SESSION = null;
+        let CURRENT_CHAT_DATA = [];
+
+        // --- UX HELPERS ---
+        function showToast(msg, type='info') {
+            const container = document.getElementById('toast-container');
+            const el = document.createElement('div');
+            // Kolory w zależności od typu
+            const colors = type === 'error' ? 'border-red-500/50 text-red-200 bg-red-900/80' : 'border-blue-500/50 text-blue-200 bg-blue-900/80';
+            
+            el.className = `pointer-events-auto flex items-center gap-3 px-4 py-3 rounded-lg border backdrop-blur-md shadow-xl transform transition-all duration-300 translate-x-10 opacity-0 ${colors} max-w-sm text-sm`;
+            el.innerHTML = `<span>${type==='error'?'⚠️':'ℹ️'}</span> ${msg}`;
+            
+            container.appendChild(el);
+            
+            // Animacja wejścia
+            requestAnimationFrame(() => { el.classList.remove('translate-x-10', 'opacity-0'); });
+
+            // Auto usuwanie
+            setTimeout(() => {
+                el.classList.add('translate-x-10', 'opacity-0');
+                setTimeout(() => el.remove(), 300);
+            }, 4000);
+        }
+
+        let confirmCallback = null;
+        function showConfirm(text, callback) {
+            document.getElementById('confirm-text').innerText = text;
+            document.getElementById('confirm-modal').classList.remove('hidden');
+            confirmCallback = callback;
+            document.getElementById('confirm-btn-yes').onclick = () => {
+                closeConfirm(true);
+            };
+        }
+        function closeConfirm(result) {
+            document.getElementById('confirm-modal').classList.add('hidden');
+            if(result && confirmCallback) confirmCallback();
+            confirmCallback = null;
+        }
+
+        // --- AUTH ---
+        function checkAuth() {
+            if(TOKEN) {
+                document.getElementById('auth-screen').classList.add('hidden');
+                document.getElementById('app-screen').classList.remove('hidden');
+                initApp();
+            } else {
+                document.getElementById('auth-screen').classList.remove('hidden');
+                document.getElementById('app-screen').classList.add('hidden');
+            }
+        }
+        async function handleLogin() {
+            const u = document.getElementById('login-user').value;
+            const p = document.getElementById('login-pass').value;
+            if(!u || !p) return showToast('Podaj login i hasło', 'error');
+            
+            try {
+                const res = await fetch(`${API_URL}?action=login`, { method: 'POST', body: JSON.stringify({username: u, password: p}) });
+                if(res.status !== 200) throw new Error("Błędne dane");
+                const d = await res.json();
+                localStorage.setItem('token', d.token); TOKEN = d.token; 
+                checkAuth();
+                showToast(`Witaj, ${d.username}`);
+            } catch(e) { showToast(e.message, 'error'); }
+        }
+        async function handleRegister() {
+            const u = document.getElementById('login-user').value;
+            const p = document.getElementById('login-pass').value;
+            if(!u || !p) return showToast('Podaj login i hasło do rejestracji', 'error');
+
+            try {
+                const res = await fetch(`${API_URL}?action=register`, { method: 'POST', body: JSON.stringify({username: u, password: p}) });
+                const d = await res.json();
+                if(d.error) throw new Error(d.error);
+                showToast('Konto założone. Zaloguj się.');
+            } catch(e) { showToast(e.message, 'error'); }
+        }
+        function logout() { localStorage.removeItem('token'); location.reload(); }
+
+        // --- APP INIT ---
+        async function initApp() { await loadProjects(); }
+
+        // --- PROJECTS ---
+        async function loadProjects() {
+            try {
+                const res = await fetch(`${API_URL}?action=get_projects`, { headers: {'Authorization': TOKEN} });
+                if(res.status === 401) { logout(); return; }
+                const d = await res.json();
+                const sel = document.getElementById('project-select');
+                sel.innerHTML = '';
+                d.projects.forEach(p => {
+                    const opt = document.createElement('option');
+                    opt.value = p.id; opt.text = p.name;
+                    sel.appendChild(opt);
+                });
+                if(d.projects.length > 0) {
+                    sel.value = d.projects[0].id;
+                    changeProject();
+                }
+            } catch(e) { showToast('Błąd ładowania projektów', 'error'); }
+        }
+
+        async function createProject() {
+            const name = prompt("Nazwa nowego projektu:"); // Prompt zostawiam bo jest native ok do inputa tekstowego, ale można zmienić na modal w przyszłości
+            if(!name) return;
+            const res = await fetch(`${API_URL}?action=create_project`, {
+                method: 'POST', headers: {'Authorization': TOKEN}, body: JSON.stringify({name: name})
+            });
+            const d = await res.json();
+            if(d.error) showToast(d.error, 'error');
+            else { 
+                await loadProjects(); 
+                document.getElementById('project-select').value = d.id; 
+                changeProject(); 
+                showToast('Projekt utworzony');
+            }
+        }
+
+        function changeProject() {
+            CURRENT_PROJECT = document.getElementById('project-select').value;
+            loadMemory();
+            loadSessions();
+            startNewChat();
+        }
+
+        // --- SESSIONS ---
+        async function loadSessions() {
+            const res = await fetch(`${API_URL}?action=get_sessions&project_id=${CURRENT_PROJECT}`, { headers: {'Authorization': TOKEN} });
+            const d = await res.json();
+            const list = document.getElementById('sessions-list');
+            list.innerHTML = '';
+            d.sessions.forEach(s => {
+                const div = document.createElement('div');
+                // Styling active state
+                const isActive = CURRENT_SESSION === s.id;
+                div.className = `group flex justify-between items-center p-3 rounded-lg cursor-pointer transition text-xs mb-1 ${isActive ? 'active-session' : 'text-gray-400 hover:bg-white/5 hover:text-gray-200'}`;
+                
+                const titleSpan = document.createElement('span');
+                titleSpan.className = 'truncate pr-2';
+                titleSpan.innerText = s.title;
+                div.onclick = () => loadChatHistory(s.id, s.title);
+                
+                const del = document.createElement('button');
+                del.innerText = '×';
+                del.className = `opacity-0 group-hover:opacity-100 hover:text-red-400 font-bold px-2 transition`;
+                del.onclick = (e) => { e.stopPropagation(); deleteSession(s.id); };
+                
+                div.appendChild(titleSpan);
+                div.appendChild(del);
+                list.appendChild(div);
+            });
+        }
+
+        async function loadChatHistory(sid, title) {
+            CURRENT_SESSION = sid;
+            document.getElementById('current-chat-title').innerText = title;
+            loadSessions(); // odśwież style
+            
+            const res = await fetch(`${API_URL}?action=get_chat_history&session_id=${sid}`, { headers: {'Authorization': TOKEN} });
+            const d = await res.json();
+            CURRENT_CHAT_DATA = d.history;
+            
+            const box = document.getElementById('chat-box');
+            box.innerHTML = '';
+            
+            d.history.forEach(msg => {
+                renderMessage(msg.role, msg.content);
+            });
+            box.scrollTop = box.scrollHeight;
+        }
+
+        function deleteSession(sid) {
+            showConfirm("Czy na pewno usunąć tę rozmowę?", async () => {
+                await fetch(`${API_URL}?action=delete_session`, {
+                    method: 'POST', headers: {'Authorization': TOKEN}, body: JSON.stringify({session_id: sid, project_id: CURRENT_PROJECT})
+                });
+                if(CURRENT_SESSION === sid) startNewChat();
+                loadSessions();
+                showToast('Rozmowa usunięta');
+            });
+        }
+
+        function startNewChat() {
+            CURRENT_SESSION = null;
+            CURRENT_CHAT_DATA = [];
+            document.getElementById('current-chat-title').innerText = "Nowa rozmowa";
+            document.getElementById('chat-box').innerHTML = `
+                <div class="flex flex-col items-center justify-center h-full text-gray-700 space-y-4 opacity-60">
+                    <div class="text-4xl animate-pulse">✨</div>
+                    <p class="text-sm tracking-wide">SYSTEM GOTOWY. ROZPOCZNIJ PRACĘ.</p>
+                </div>`;
+            loadSessions();
+        }
+
+        function downloadChat() {
+            if (!CURRENT_CHAT_DATA || CURRENT_CHAT_DATA.length === 0) return showToast("Brak historii do pobrania", 'error');
+            
+            let textContent = "--- HISTORIA CZATU BRAND OS ---\n";
+            textContent += `Projekt: ${document.getElementById('project-select').options[document.getElementById('project-select').selectedIndex].text}\n`;
+            textContent += `Data: ${new Date().toLocaleString()}\n\n`;
+
+            CURRENT_CHAT_DATA.forEach(msg => {
+                const role = msg.role === 'user' ? 'TY' : 'AI';
+                textContent += `[${role}]:\n${msg.content}\n\n${'-'.repeat(20)}\n\n`;
+            });
+
+            const blob = new Blob([textContent], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `chat_export_${new Date().toISOString().slice(0,10)}.txt`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        }
+
+        // --- RENDER ---
+        function renderMessage(role, text) {
+            const box = document.getElementById('chat-box');
+            // Usuń placeholder jeśli jest
+            if(box.querySelector('.flex-col')) box.innerHTML = '';
+            
+            const wrapper = document.createElement('div');
+            wrapper.className = `flex w-full mb-6 ${role === 'user' ? 'justify-end' : 'justify-start'}`;
+            
+            // Avatar / Icon
+            const icon = document.createElement('div');
+            icon.className = `w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-1 shadow-lg ${role === 'user' ? 'hidden' : 'bg-gradient-to-br from-blue-600 to-indigo-600 text-white mr-3'}`;
+            icon.innerText = role === 'user' ? 'T' : 'AI';
+
+            const bubble = document.createElement('div');
+            // Design Bańki
+            if(role === 'user') {
+                bubble.className = 'bg-blue-600 text-white px-5 py-3 rounded-2xl rounded-tr-sm max-w-[85%] shadow-lg shadow-blue-900/20 text-sm leading-relaxed';
+                bubble.innerText = text;
+            } else {
+                bubble.className = 'glass-panel px-6 py-5 rounded-2xl rounded-tl-sm max-w-[90%] prose prose-invert text-sm shadow-xl border-white/5';
+                bubble.innerHTML = marked.parse(text);
+            }
+            
+            wrapper.appendChild(icon);
+            wrapper.appendChild(bubble);
+            box.appendChild(wrapper);
+            return bubble;
+        }
+
+        // --- MEMORY ---
+        async function loadMemory() {
+            if(!CURRENT_PROJECT) return;
+            const res = await fetch(`${API_URL}?action=get_memory&project_id=${CURRENT_PROJECT}`, { headers: {'Authorization': TOKEN} });
+            const d = await res.json();
+            const list = document.getElementById('memory-list');
+            list.innerHTML = '';
+            document.getElementById('mem-percent').innerText = d.usage + '%';
+            document.getElementById('mem-bar').style.width = d.usage + '%';
+            document.getElementById('mem-badge').innerText = d.usage + '%';
+
+            // Kolory paska zależnie od zużycia
+            const bar = document.getElementById('mem-bar');
+            if(d.usage > 90) bar.className = 'bg-red-500 h-full w-0 transition-all';
+            else bar.className = 'bg-gradient-to-r from-blue-600 to-purple-600 h-full w-0 transition-all';
+
+            for(const [k, v] of Object.entries(d.data)) {
+                const el = document.createElement('div');
+                el.className = 'glass-panel p-3 rounded-lg border border-white/5 text-xs group relative hover:border-blue-500/30 transition';
+                el.innerHTML = `
+                    <div class="flex justify-between items-start mb-1">
+                        <strong class="text-blue-400 font-mono tracking-tight">${k}</strong>
+                        <div class="flex gap-2 opacity-0 group-hover:opacity-100 transition">
+                             <button onclick="openMemModal('${k}', '${v.replace(/'/g, "\\'").replace(/\n/g, "\\n")}')" class="text-gray-400 hover:text-white">✎</button>
+                             <button onclick="deleteMem('${k}')" class="text-gray-400 hover:text-red-500">🗑</button>
+                        </div>
+                    </div>
+                    <div class="text-gray-400 line-clamp-3 leading-relaxed">${v}</div>
+                `;
+                list.appendChild(el);
+            }
+        }
+        
+        async function deleteMem(k) {
+            showConfirm(`Usunąć wiedzę: ${k}?`, async () => {
+                await fetch(`${API_URL}?action=update_memory`, {
+                    method: 'POST', headers: {'Authorization': TOKEN}, body: JSON.stringify({project_id: CURRENT_PROJECT, key: k, act: 'delete'})
+                });
+                loadMemory();
+                showToast('Wiedza usunięta');
+            });
+        }
+
+        function openMemModal(k='', v='') {
+            document.getElementById('mem-key').value = k;
+            document.getElementById('mem-key').disabled = !!k;
+            document.getElementById('mem-val').value = v;
+            document.getElementById('mem-modal').classList.remove('hidden');
+        }
+        function closeMemModal() { document.getElementById('mem-modal').classList.add('hidden'); }
+        async function saveMem() {
+            const k = document.getElementById('mem-key').value;
+            const v = document.getElementById('mem-val').value;
+            if(!k || !v) return showToast('Wypełnij oba pola', 'error');
+
+            await fetch(`${API_URL}?action=update_memory`, {
+                method: 'POST', headers: {'Authorization': TOKEN}, body: JSON.stringify({project_id: CURRENT_PROJECT, key: k, value: v})
+            });
+            closeMemModal(); loadMemory();
+            showToast('Pamięć zaktualizowana');
+        }
+        
+        function toggleMemoryPanel() {
+            const p = document.getElementById('memory-panel');
+            if (p.classList.contains('translate-x-full')) {
+                p.classList.remove('translate-x-full');
+            } else {
+                p.classList.add('translate-x-full');
+            }
+        }
+
+        // --- CHAT LOGIC ---
+        const fileInput = document.getElementById('file-input');
+        function handleFile(inp) { 
+            if(inp.files[0]) {
+                document.getElementById('file-preview').classList.remove('hidden');
+                document.getElementById('filename').innerText = inp.files[0].name;
+                showToast('Dodano załącznik');
+            }
+        }
+        function clearFile() { fileInput.value = ''; document.getElementById('file-preview').classList.add('hidden'); }
+
+        document.getElementById('chat-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const txt = document.getElementById('msg-input').value;
+            const file = fileInput.files[0];
+            if(!txt && !file) return;
+
+            renderMessage('user', txt + (file ? ` [Plik: ${file.name}]` : ''));
+            CURRENT_CHAT_DATA.push({role: 'user', content: txt}); 
+            
+            document.getElementById('msg-input').value = '';
+            clearFile();
+
+            const formData = new FormData();
+            formData.append('message', txt);
+            formData.append('token', TOKEN);
+            formData.append('project_id', CURRENT_PROJECT);
+            if(CURRENT_SESSION) formData.append('session_id', CURRENT_SESSION);
+            if(file) formData.append('file', file);
+
+            // Placeholder AI z animacją
+            const botBubble = renderMessage('assistant', '<span class="animate-pulse">Analizuję dane...</span>');
+            let botText = "";
+
+            try {
+                const res = await fetch(`${API_URL}?action=chat`, { method: 'POST', body: formData });
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                
+                while(true) {
+                    const {done, value} = await reader.read();
+                    if(done) break;
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n');
+                    for(const line of lines) {
+                        if(!line.trim()) continue;
+                        try {
+                            const d = JSON.parse(line);
+                            if(d.status === 'session_init') {
+                                CURRENT_SESSION = d.id;
+                                loadSessions();
+                            } else if(d.status === 'content') {
+                                if(botText === "") botText = "";
+                                botText += d.text;
+                                botBubble.innerHTML = marked.parse(botText);
+                                document.getElementById('chat-box').scrollTop = document.getElementById('chat-box').scrollHeight;
+                            } else if (d.status === 'searching') {
+                                botBubble.innerHTML = '<span class="text-blue-400 animate-pulse">🔍 Przeszukuję sieć...</span>';
+                            }
+                        } catch(e){}
+                    }
+                }
+                CURRENT_CHAT_DATA.push({role: 'assistant', content: botText});
+
+            } catch(e) { 
+                botBubble.innerHTML = '<span class="text-red-400">Błąd połączenia z API.</span>'; 
+                showToast('Błąd komunikacji', 'error');
+            }
+        });
+
+        checkAuth();
+    </script>
+</body>
+</html>
