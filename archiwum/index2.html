@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Brand OS</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+
+    <style>
+        body { background: #0f172a; color: #e2e8f0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .active-session { background-color: #1e293b; border-left: 3px solid #3b82f6; }
+
+        /* Style Markdown */
+        .markdown-content { font-size: 0.95rem; line-height: 1.7; color: #d1d5db; }
+        .markdown-content h1, .markdown-content h2, .markdown-content h3 { color: #f3f4f6; font-weight: 700; margin-top: 1.5em; margin-bottom: 0.5em; }
+        .markdown-content h1 { font-size: 1.5em; }
+        .markdown-content h2 { font-size: 1.25em; border-bottom: 1px solid #374151; padding-bottom: 0.3em; }
+        .markdown-content p { margin-bottom: 1em; }
+        .markdown-content ul { list-style-type: disc; padding-left: 1.5em; margin-bottom: 1em; }
+        .markdown-content ol { list-style-type: decimal; padding-left: 1.5em; margin-bottom: 1em; }
+        .markdown-content li { margin-bottom: 0.25em; }
+        .markdown-content strong { color: #fff; font-weight: 600; }
+        .markdown-content blockquote { border-left: 4px solid #3b82f6; padding-left: 1em; color: #9ca3af; font-style: italic; background: #1f293750; padding-top: 2px; padding-bottom: 2px; }
+        
+        /* Kod */
+        .markdown-content pre { margin: 1em 0; border-radius: 0.5rem; overflow: hidden; background: #282c34; border: 1px solid #374151; }
+        .markdown-content code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 0.9em; }
+        
+        /* Animacje */
+        .cursor-blink::after { content: "▋"; display: inline-block; color: #3b82f6; animation: blink 1s step-end infinite; margin-left: 2px; vertical-align: baseline; }
+        @keyframes blink { 50% { opacity: 0; } }
+        .msg-actions { opacity: 0; transition: opacity 0.2s; }
+        .msg-bubble:hover .msg-actions { opacity: 1; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-fade-in { animation: fadeIn 0.3s ease-out forwards; }
+    </style>
+</head>
+<body class="h-screen flex overflow-hidden relative">
+
+    <div id="auth-screen" class="fixed inset-0 bg-gray-900 z-[100] flex items-center justify-center p-4">
+        <div class="bg-gray-800 p-8 rounded-2xl shadow-2xl w-full max-w-md border border-gray-700">
+            <h2 class="text-3xl font-bold text-white mb-6 text-center tracking-tight">BRAND <span class="text-blue-500">OS</span></h2>
+            <form onsubmit="handleLogin(); return false;">
+                <input id="login-user" type="text" placeholder="Login" autocomplete="username" class="w-full mb-3 bg-gray-900 border border-gray-600 rounded-lg p-3 text-white outline-none focus:border-blue-500 transition">
+                <input id="login-pass" type="password" placeholder="Hasło" autocomplete="current-password" class="w-full mb-6 bg-gray-900 border border-gray-600 rounded-lg p-3 text-white outline-none focus:border-blue-500 transition">
+                <button type="submit" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-lg transition shadow-lg shadow-blue-500/20">Zaloguj się</button>
+            </form>
+            <p class="text-center mt-6 text-gray-500 hover:text-gray-300 cursor-pointer text-sm transition" onclick="handleRegister()">Załóż darmowe konto</p>
+            <p id="auth-error" class="text-red-400 text-center mt-4 text-sm hidden bg-red-900/20 p-2 rounded border border-red-900/50"></p>
+        </div>
+    </div>
+
+    <div id="app-screen" class="hidden flex w-full h-full">
+        
+        <div class="w-72 bg-gray-900 border-r border-gray-800 flex flex-col flex-shrink-0">
+            <div class="p-5 border-b border-gray-800">
+                <label class="text-[10px] text-gray-500 uppercase font-bold tracking-widest mb-2 block">Twój Projekt</label>
+                <div class="flex gap-2">
+                    <div class="relative flex-1">
+                        <select id="project-select" onchange="changeProject()" class="w-full bg-gray-800 text-white text-sm rounded-lg border border-gray-700 p-2.5 outline-none appearance-none cursor-pointer focus:border-blue-500 transition">
+                            <option>Ładowanie...</option>
+                        </select>
+                        <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-400">▼</div>
+                    </div>
+                    <button onclick="createProject()" class="bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 px-3 rounded-lg transition" title="Nowy Projekt">+</button>
+                </div>
+            </div>
+
+            <div class="p-4">
+                <button onclick="startNewChat()" class="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition shadow-lg shadow-blue-900/20 group">
+                    <span class="group-hover:rotate-90 transition">+</span> Nowy Czat
+                </button>
+            </div>
+
+            <div class="flex-1 overflow-y-auto px-3 space-y-1 pb-4" id="sessions-list"></div>
+            
+            <div class="p-4 border-t border-gray-800 text-xs text-gray-500 flex justify-between items-center bg-gray-900/50">
+                <span>Historia: 30 dni</span>
+                <span onclick="logout()" class="cursor-pointer hover:text-red-400 transition flex items-center gap-1">
+                    Wyloguj
+                </span>
+            </div>
+        </div>
+
+        <div class="flex-1 flex flex-col bg-gray-900 relative">
+            <div class="h-16 border-b border-gray-800 flex items-center justify-between px-6 bg-gray-900/90 backdrop-blur z-10">
+                <div class="font-bold text-gray-200 truncate max-w-[300px] text-lg" id="current-chat-title">Nowa rozmowa</div>
+                
+                <div class="flex gap-3">
+                    <button onclick="downloadChat()" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 px-3 py-1.5 rounded transition flex items-center gap-2" title="Pobierz historię">
+                        ⬇️ TXT
+                    </button>
+
+                    <button onclick="toggleMemoryPanel()" class="text-sm bg-gray-800 hover:bg-gray-700 text-blue-400 border border-blue-900/30 px-3 py-1.5 rounded transition flex gap-2 items-center shadow-sm">
+                        <span>🧠</span> Pamięć <span id="mem-badge" class="bg-blue-900 text-blue-200 px-1.5 rounded text-[10px] font-mono">0%</span>
+                    </button>
+                </div>
+            </div>
+
+            <div id="chat-box" class="flex-1 overflow-y-auto p-4 md:p-8 space-y-6">
+                <div class="text-center text-gray-600 mt-32 flex flex-col items-center gap-4 animate-fade-in">
+                    <div class="w-16 h-16 bg-gray-800 rounded-2xl flex items-center justify-center text-3xl shadow-xl">✨</div>
+                    <p class="text-lg font-medium text-gray-400">W czym mogę Ci dzisiaj pomóc?</p>
+                </div>
+            </div>
+
+            <div class="p-6 bg-gray-900 border-t border-gray-800">
+                <div id="file-preview" class="hidden mb-3 px-3 py-2 bg-blue-900/20 border border-blue-800 rounded-lg text-xs text-blue-300 w-fit flex items-center gap-2">
+                    <span id="filename">plik.txt</span> <button onclick="clearFile()" class="hover:text-white ml-2">✕</button>
+                </div>
+                <form id="chat-form" class="relative max-w-4xl mx-auto">
+                    <label class="absolute left-3 top-3 cursor-pointer p-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg transition" title="Załącz plik">
+                        <input type="file" id="file-input" class="hidden" onchange="handleFile(this)">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
+                    </label>
+                    <input id="msg-input" type="text" class="w-full bg-gray-800 text-white rounded-xl pl-14 pr-16 py-4 border border-gray-700 focus:border-blue-500 outline-none transition shadow-inner placeholder-gray-500" placeholder="Zadaj pytanie, poproś o kod lub research..." autocomplete="off">
+                    <button type="submit" class="absolute right-3 top-3 bg-blue-600 hover:bg-blue-500 p-2 rounded-lg text-white shadow-lg transition transform hover:scale-105">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"></path></svg>
+                    </button>
+                </form>
+                <p class="text-center text-[10px] text-gray-600 mt-2">DeepSeek V3 + Tavily Search Enabled</p>
+            </div>
+        </div>
+
+        <div id="memory-panel" class="fixed right-0 top-0 h-full w-96 bg-gray-900 border-l border-gray-800 flex flex-col transform translate-x-full transition-transform duration-300 z-50 shadow-2xl">
+            <div class="p-5 border-b border-gray-800 flex justify-between bg-gray-900 items-center">
+                <h3 class="font-bold text-white text-lg flex items-center gap-2">🧠 Baza Wiedzy</h3>
+                <button onclick="toggleMemoryPanel()" class="text-gray-400 hover:text-white p-2 hover:bg-gray-800 rounded transition">✕</button>
+            </div>
+            <div class="px-6 py-4 bg-gray-900 border-b border-gray-800">
+                <div class="flex justify-between text-xs text-gray-400 mb-2"><span>Wykorzystanie pamięci</span><span id="mem-percent">0%</span></div>
+                <div class="w-full bg-gray-800 h-1.5 rounded-full overflow-hidden"><div id="mem-bar" class="bg-blue-500 h-full rounded-full w-0 transition-all duration-500"></div></div>
+            </div>
+            <div id="memory-list" class="flex-1 overflow-y-auto p-4 space-y-3"></div>
+            <div class="p-4 border-t border-gray-800 bg-gray-900">
+                <button onclick="openMemModal()" class="w-full py-3 border border-dashed border-gray-700 text-gray-400 text-sm rounded-lg hover:text-blue-400 hover:border-blue-500 hover:bg-blue-900/10 transition flex items-center justify-center gap-2">
+                    <span>+</span> Dodaj nową wiedzę
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div id="mem-modal" class="hidden fixed inset-0 bg-black/80 z-[60] flex items-center justify-center p-4 backdrop-blur-sm">
+        <div class="bg-gray-800 rounded-2xl w-full max-w-lg p-6 border border-gray-700 shadow-2xl animate-fade-in">
+            <h3 class="font-bold text-xl mb-6 text-white">Edycja Wiedzy</h3>
+            <label class="block text-xs text-gray-500 uppercase font-bold mb-1">Klucz (Temat)</label>
+            <input id="mem-key" class="w-full mb-4 bg-gray-900 border border-gray-600 rounded-lg p-3 text-white focus:border-blue-500 outline-none" placeholder="np. GRUPA_DOCELOWA">
+            
+            <label class="block text-xs text-gray-500 uppercase font-bold mb-1">Treść</label>
+            <textarea id="mem-val" class="w-full mb-6 bg-gray-900 border border-gray-600 rounded-lg p-3 text-white h-40 focus:border-blue-500 outline-none resize-none" placeholder="Opisz szczegóły..."></textarea>
+            
+            <div class="flex justify-end gap-3">
+                <button onclick="closeMemModal()" class="px-4 py-2 text-gray-400 hover:text-white transition">Anuluj</button>
+                <button onclick="saveMem()" class="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition shadow-lg">Zapisz</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'api.php';
+        let TOKEN = localStorage.getItem('token');
+        let CURRENT_PROJECT = null;
+        let CURRENT_SESSION = null;
+        let CURRENT_CHAT_DATA = [];
+
+        // Bezpieczne ładowanie Highlight
+        document.addEventListener('DOMContentLoaded', (event) => {
+            if (typeof hljs !== 'undefined') {
+                hljs.highlightAll();
+            }
+        });
+
+        function checkAuth() {
+            if(TOKEN) {
+                document.getElementById('auth-screen').classList.add('hidden');
+                document.getElementById('app-screen').classList.remove('hidden');
+                initApp();
+            } else {
+                document.getElementById('auth-screen').classList.remove('hidden');
+                document.getElementById('app-screen').classList.add('hidden');
+            }
+        }
+        async function handleLogin() {
+            const u = document.getElementById('login-user').value;
+            const p = document.getElementById('login-pass').value;
+            const res = await fetch(`${API_URL}?action=login`, { method: 'POST', body: JSON.stringify({username: u, password: p}) });
+            const d = await res.json();
+            if(d.token) { localStorage.setItem('token', d.token); TOKEN = d.token; checkAuth(); }
+            else document.getElementById('auth-error').innerText = d.error; document.getElementById('auth-error').classList.remove('hidden');
+        }
+        async function handleRegister() {
+            const u = document.getElementById('login-user').value;
+            const p = document.getElementById('login-pass').value;
+            const res = await fetch(`${API_URL}?action=register`, { method: 'POST', body: JSON.stringify({username: u, password: p}) });
+            const d = await res.json();
+            if(d.message) alert(d.message); else alert(d.error);
+        }
+        function logout() { localStorage.removeItem('token'); location.reload(); }
+
+        async function initApp() { await loadProjects(); }
+
+        async function loadProjects() {
+            const res = await fetch(`${API_URL}?action=get_projects`, { headers: {'Authorization': TOKEN} });
+            const d = await res.json();
+            const sel = document.getElementById('project-select');
+            sel.innerHTML = '';
+            d.projects.forEach(p => { const opt = document.createElement('option'); opt.value = p.id; opt.text = p.name; sel.appendChild(opt); });
+            if(d.projects.length > 0) { sel.value = d.projects[0].id; changeProject(); }
+        }
+        async function createProject() {
+            const name = prompt("Nazwa nowego projektu:"); if(!name) return;
+            const res = await fetch(`${API_URL}?action=create_project`, { method: 'POST', headers: {'Authorization': TOKEN}, body: JSON.stringify({name: name}) });
+            const d = await res.json(); if(d.error) alert(d.error); else { await loadProjects(); document.getElementById('project-select').value = d.id; changeProject(); }
+        }
+        function changeProject() {
+            CURRENT_PROJECT = document.getElementById('project-select').value;
+            loadMemory(); loadSessions(); startNewChat();
+        }
+        async function loadSessions() {
+            const res = await fetch(`${API_URL}?action=get_sessions&project_id=${CURRENT_PROJECT}`, { headers: {'Authorization': TOKEN} });
+            const d = await res.json();
+            const list = document.getElementById('sessions-list'); list.innerHTML = '';
+            d.sessions.forEach(s => {
+                const div = document.createElement('div');
+                div.className = `p-3 rounded-lg cursor-pointer hover:bg-gray-800 text-sm text-gray-300 truncate transition mb-1 flex justify-between items-center group ${CURRENT_SESSION === s.id ? 'active-session' : ''}`;
+                div.onclick = () => loadChatHistory(s.id, s.title);
+                div.innerHTML = `<span>${s.title}</span> <span onclick="event.stopPropagation(); deleteSession('${s.id}')" class="text-gray-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition px-2">×</span>`;
+                list.appendChild(div);
+            });
+        }
+        async function loadChatHistory(sid, title) {
+            CURRENT_SESSION = sid;
+            document.getElementById('current-chat-title').innerText = title;
+            loadSessions();
+            const res = await fetch(`${API_URL}?action=get_chat_history&session_id=${sid}`, { headers: {'Authorization': TOKEN} });
+            const d = await res.json();
+            CURRENT_CHAT_DATA = d.history;
+            const box = document.getElementById('chat-box'); box.innerHTML = '';
+            d.history.forEach(msg => renderMessage(msg.role, msg.content, false)); 
+            
+            // Highlight
+            if (typeof hljs !== 'undefined') box.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+            box.scrollTop = box.scrollHeight;
+        }
+        async function deleteSession(sid) {
+            if(!confirm("Usunąć rozmowę?")) return;
+            await fetch(`${API_URL}?action=delete_session`, { method: 'POST', headers: {'Authorization': TOKEN}, body: JSON.stringify({session_id: sid, project_id: CURRENT_PROJECT}) });
+            if(CURRENT_SESSION === sid) startNewChat(); loadSessions();
+        }
+        function startNewChat() {
+            CURRENT_SESSION = null; CURRENT_CHAT_DATA = [];
+            document.getElementById('current-chat-title').innerText = "Nowa rozmowa";
+            document.getElementById('chat-box').innerHTML = '<div class="text-center text-gray-600 mt-32 flex flex-col items-center gap-4 animate-fade-in"><div class="w-16 h-16 bg-gray-800 rounded-2xl flex items-center justify-center text-3xl shadow-xl">✨</div><p class="text-lg font-medium text-gray-400">W czym mogę Ci dzisiaj pomóc?</p></div>';
+            loadSessions();
+        }
+        function downloadChat() {
+            if (!CURRENT_CHAT_DATA || CURRENT_CHAT_DATA.length === 0) return alert("Brak historii.");
+            let txt = `CHAT EXPORT - ${new Date().toLocaleString()}\nPROJEKT: ${document.getElementById('project-select').options[document.getElementById('project-select').selectedIndex].text}\n\n`;
+            CURRENT_CHAT_DATA.forEach(m => txt += `[${m.role.toUpperCase()}]:\n${m.content}\n\n----------------\n\n`);
+            const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([txt], {type: 'text/plain'})); a.download = `chat_${new Date().toISOString().slice(0,10)}.txt`;
+            a.click();
+        }
+
+        function copyToClipboard(text, btn) {
+            navigator.clipboard.writeText(text).then(() => {
+                const originalIcon = btn.innerHTML;
+                btn.innerHTML = `<span class="text-green-400 text-xs font-bold">Skopiowano!</span>`;
+                setTimeout(() => { btn.innerHTML = originalIcon; }, 2000);
+            });
+        }
+
+        function renderMessage(role, text, animate = true) {
+            const box = document.getElementById('chat-box');
+            if(box.querySelector('.text-center')) box.innerHTML = '';
+            
+            const div = document.createElement('div');
+            div.className = role === 'user' ? 'flex justify-end mb-6' : 'flex justify-start mb-6 w-full msg-bubble';
+            
+            if (role === 'user') {
+                div.innerHTML = `<div class="bg-blue-600 text-white px-6 py-4 rounded-2xl rounded-tr-sm max-w-[85%] shadow-md leading-relaxed animate-fade-in">${text}</div>`;
+            } else {
+                const bubbleId = 'ai-msg-' + Date.now() + Math.random().toString(36).substr(2, 9);
+                div.innerHTML = `
+                    <div class="flex flex-col max-w-[90%] w-full animate-fade-in">
+                        <div id="${bubbleId}" class="bg-gray-800 text-gray-100 px-6 py-5 rounded-2xl rounded-tl-sm border border-gray-700/50 shadow-lg markdown-content ${animate ? 'cursor-blink' : ''}"></div>
+                        <div class="flex items-center gap-2 mt-2 ml-2 msg-actions">
+                            <button onclick="copyToClipboard(this.getAttribute('data-raw'), this)" data-raw="${text.replace(/"/g, '&quot;')}" class="text-gray-500 hover:text-white transition flex items-center gap-1 text-xs px-2 py-1 rounded hover:bg-gray-800">
+                                📋 Kopiuj
+                            </button>
+                        </div>
+                    </div>`;
+                box.appendChild(div);
+                const contentDiv = document.getElementById(bubbleId);
+                contentDiv.innerHTML = marked.parse(text);
+                if (typeof hljs !== 'undefined') contentDiv.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+                return contentDiv;
+            }
+            box.appendChild(div);
+            return null;
+        }
+
+        async function loadMemory() {
+            if(!CURRENT_PROJECT) return;
+            const res = await fetch(`${API_URL}?action=get_memory&project_id=${CURRENT_PROJECT}`, { headers: {'Authorization': TOKEN} });
+            const d = await res.json();
+            const list = document.getElementById('memory-list'); list.innerHTML = '';
+            document.getElementById('mem-percent').innerText = d.usage + '%'; document.getElementById('mem-bar').style.width = d.usage + '%';
+            document.getElementById('mem-badge').innerText = d.usage + '%';
+            
+            for(const [k, v] of Object.entries(d.data)) {
+                const el = document.createElement('div');
+                el.className = 'bg-gray-800 p-4 rounded-xl border border-gray-700/50 hover:border-blue-500/50 transition mb-3 group shadow-sm';
+                el.innerHTML = `
+                    <div class="flex justify-between items-start mb-2">
+                        <strong class="text-blue-400 text-xs uppercase tracking-wider font-bold bg-blue-900/20 px-2 py-0.5 rounded">${k}</strong>
+                        <div class="flex gap-1 opacity-0 group-hover:opacity-100 transition">
+                             <button onclick="openMemModal('${k}', '${v.replace(/'/g, "\\'")}')" class="text-gray-500 hover:text-white p-1 hover:bg-gray-700 rounded">✎</button>
+                             <button onclick="deleteMem('${k}')" class="text-gray-500 hover:text-red-400 p-1 hover:bg-gray-700 rounded">🗑</button>
+                        </div>
+                    </div>
+                    <p class="text-sm text-gray-300 leading-relaxed">${v}</p>
+                `;
+                list.appendChild(el);
+            }
+        }
+        async function deleteMem(k) { if(!confirm(`Usunąć: ${k}?`)) return; await fetch(`${API_URL}?action=update_memory`, { method: 'POST', headers: {'Authorization': TOKEN}, body: JSON.stringify({project_id: CURRENT_PROJECT, key: k, act: 'delete'}) }); loadMemory(); }
+        function openMemModal(k='', v='') { document.getElementById('mem-key').value = k; document.getElementById('mem-key').disabled = !!k; document.getElementById('mem-val').value = v; document.getElementById('mem-modal').classList.remove('hidden'); }
+        function closeMemModal() { document.getElementById('mem-modal').classList.add('hidden'); }
+        async function saveMem() {
+            const k = document.getElementById('mem-key').value; const v = document.getElementById('mem-val').value;
+            await fetch(`${API_URL}?action=update_memory`, { method: 'POST', headers: {'Authorization': TOKEN}, body: JSON.stringify({project_id: CURRENT_PROJECT, key: k, value: v}) });
+            closeMemModal(); loadMemory();
+        }
+        function toggleMemoryPanel() { document.getElementById('memory-panel').classList.toggle('translate-x-full'); }
+
+        const fileInput = document.getElementById('file-input');
+        function handleFile(inp) { if(inp.files[0]) { document.getElementById('file-preview').classList.remove('hidden'); document.getElementById('filename').innerText = inp.files[0].name; } }
+        function clearFile() { fileInput.value = ''; document.getElementById('file-preview').classList.add('hidden'); }
+
+        document.getElementById('chat-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const txt = document.getElementById('msg-input').value; const file = fileInput.files[0];
+            if(!txt && !file) return;
+
+            renderMessage('user', txt + (file ? ` [Plik: ${file.name}]` : ''), false);
+            CURRENT_CHAT_DATA.push({role: 'user', content: txt});
+            document.getElementById('msg-input').value = ''; clearFile();
+            const box = document.getElementById('chat-box');
+            box.scrollTop = box.scrollHeight;
+
+            const formData = new FormData();
+            formData.append('message', txt); formData.append('token', TOKEN); formData.append('project_id', CURRENT_PROJECT);
+            if(CURRENT_SESSION) formData.append('session_id', CURRENT_SESSION); if(file) formData.append('file', file);
+
+            const contentDiv = renderMessage('assistant', '', true);
+            let botText = "";
+
+            try {
+                const res = await fetch(`${API_URL}?action=chat`, { method: 'POST', body: formData });
+                const reader = res.body.getReader(); const decoder = new TextDecoder();
+                
+                while(true) {
+                    const {done, value} = await reader.read();
+                    if(done) break;
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n');
+                    for(const line of lines) {
+                        if(!line.trim()) continue;
+                        try {
+                            const d = JSON.parse(line);
+                            if(d.status === 'session_init') { CURRENT_SESSION = d.id; loadSessions(); }
+                            else if(d.status === 'searching') { 
+                                contentDiv.innerHTML = `<span class="text-blue-400 italic flex items-center gap-2"><svg class="animate-spin h-4 w-4 text-blue-500" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> ${d.text}</span>`;
+                            }
+                            else if(d.status === 'content') {
+                                if(botText === "") contentDiv.innerHTML = ""; 
+                                botText += d.text;
+                                contentDiv.innerHTML = marked.parse(botText);
+                                if (typeof hljs !== 'undefined') contentDiv.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+                                
+                                const copyBtn = contentDiv.parentElement.querySelector('button[data-raw]');
+                                if(copyBtn) copyBtn.setAttribute('data-raw', botText);
+                                
+                                box.scrollTop = box.scrollHeight;
+                            }
+                        } catch(e){}
+                    }
+                }
+                contentDiv.classList.remove('cursor-blink');
+                CURRENT_CHAT_DATA.push({role: 'assistant', content: botText});
+
+            } catch(e) { contentDiv.innerHTML = "Błąd połączenia."; }
+        });
+
+        checkAuth();
+    </script>
+</body>
+</html>
