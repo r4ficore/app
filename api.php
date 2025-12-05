@@ -8,11 +8,20 @@ ini_set('implicit_flush', 1);
 error_reporting(0);
 ini_set('display_errors', 0);
 
-$DEEPSEEK_KEY = "sk-f5095ebe51da4b30841efe2faf256745";
-$TAVILY_KEY = "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";
-$DATA_DIR = __DIR__ . '/data';
+$env = function(string $key, $default = '') {
+    $val = getenv($key);
+    return ($val !== false && $val !== '') ? $val : $default;
+};
+
+$DEEPSEEK_KEY = $env('DEEPSEEK_KEY', "sk-f5095ebe51da4b30841efe2faf256745");
+$TAVILY_KEY = $env('TAVILY_KEY', "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");
+$DATA_DIR = rtrim($env('DATA_DIR', __DIR__ . '/data'), '/');
 $MEMORY_LIMIT = 20000;
 $PROJECT_LIMIT = 2;
+$SESSION_TTL_DAYS = intval($env('SESSION_TTL_DAYS', 30));
+$MAX_UPLOAD_SIZE = 2 * 1024 * 1024; // 2MB
+$ALLOWED_UPLOAD_MIME = ['text/plain', 'text/markdown', 'text/x-markdown', 'application/json', 'text/csv'];
+$MAX_FILE_PROMPT_CHARS = 12000;
 
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: POST, GET, OPTIONS");
@@ -37,6 +46,13 @@ function save_json($filename, $data) {
     file_put_contents($DATA_DIR . '/' . basename($filename), json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
 }
 
+function sanitize_file_content(string $content, int $maxLen) {
+    // Usuń znaki kontrolne (poza nową linią/tab) i przytnij do bezpiecznej długości
+    $content = preg_replace('/[\x00-\x08\x0B-\x1F\x7F]/u', '', $content);
+    $content = mb_substr($content, 0, $maxLen);
+    return $content;
+}
+
 function send_json($data) {
     while (ob_get_level()) { ob_end_clean(); }
     header('Content-Type: application/json; charset=utf-8');
@@ -51,6 +67,10 @@ function send_error($msg, $code = 400) {
 
 // 1. Tavily (Szukanie ogólne)
 function search_tavily($query, $api_key) {
+    if (empty($api_key)) {
+        return ['error' => 'Brak klucza Tavily API'];
+    }
+
     $ch = curl_init('https://api.tavily.com/search');
     $data = json_encode([
         'api_key' => $api_key,
@@ -63,8 +83,8 @@ function search_tavily($query, $api_key) {
     curl_setopt($ch, CURLOPT_POST, true);
     curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
     curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
-    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 1);
     
     $response = curl_exec($ch);
     $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -72,6 +92,24 @@ function search_tavily($query, $api_key) {
 
     if ($http_code !== 200) return ['error' => "API Error: $http_code"];
     return json_decode($response, true) ?? ['results' => []];
+}
+
+function build_tavily_query(string $message): string {
+    $trimmed = trim($message);
+
+    if (preg_match('/\bhttps?:\/\/[^\s]+/i', $trimmed, $matches)) {
+        $url = $matches[0];
+        $without_url = trim(str_replace($url, '', $trimmed));
+        $host = parse_url($url, PHP_URL_HOST) ?: $url;
+
+        if (!empty($without_url)) {
+            return $without_url . " (źródło: {$host})";
+        }
+
+        return "Najważniejsze informacje ze strony {$host} ({$url})";
+    }
+
+    return $trimmed;
 }
 
 // 2. Simple Scraper (Wchodzenie w linki bezpośrednio)
@@ -83,8 +121,8 @@ function simple_scrape($url) {
     curl_setopt($ch, CURLOPT_TIMEOUT, 15);
     // Udajemy przeglądarkę, żeby nas nie zablokowali
     curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
-    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 1);
     
     $html = curl_exec($ch);
     $error = curl_error($ch);
@@ -101,9 +139,60 @@ function simple_scrape($url) {
     return mb_substr(trim($text), 0, 15000); // Limit znaków dla modelu
 }
 
+function prune_old_sessions(string $user, string $projectId) {
+    global $SESSION_TTL_DAYS, $DATA_DIR;
+
+    if ($SESSION_TTL_DAYS <= 0) return;
+
+    $file = "sessions_list_{$user}_{$projectId}.json";
+    $list = get_json($file);
+    if (empty($list)) return;
+
+    $threshold = (new DateTimeImmutable())->modify("-{$SESSION_TTL_DAYS} days");
+    $updated_list = [];
+
+    foreach ($list as $session) {
+        $updated = $session['updated_at'] ?? $session['created_at'] ?? null;
+        $updated_dt = $updated ? DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $updated) : false;
+
+        if ($updated_dt && $updated_dt < $threshold) {
+            @unlink($DATA_DIR . '/' . basename("chat_{$user}_{$session['id']}.json"));
+            continue;
+        }
+
+        $updated_list[] = $session;
+    }
+
+    if ($updated_list !== $list) {
+        save_json($file, $updated_list);
+    }
+}
+
 // --- LOGIKA ENDPOINTÓW ---
 $action = $_GET['action'] ?? '';
 $input = json_decode(file_get_contents('php://input'), true);
+
+// Health check (public, bez wrażliwych danych)
+if ($action === 'health') {
+    $health = [
+        'status' => 'ok',
+        'time' => date('c'),
+        'data_dir' => [
+            'exists' => is_dir($DATA_DIR),
+            'writable' => is_writable($DATA_DIR)
+        ],
+        'dependencies' => [
+            'curl' => function_exists('curl_version'),
+            'json' => function_exists('json_encode')
+        ],
+        'api_keys' => [
+            'deepseek_configured' => !empty($DEEPSEEK_KEY),
+            'tavily_configured' => !empty($TAVILY_KEY)
+        ]
+    ];
+
+    send_json($health);
+}
 
 // Auth & Users
 if ($action === 'register') {
@@ -190,6 +279,7 @@ if ($action === 'update_memory') {
 
 if ($action === 'get_sessions') {
     $pid = $_GET['project_id'] ?? '';
+    prune_old_sessions($current_user, $pid);
     $sessions = get_json("sessions_list_{$current_user}_{$pid}.json");
     usort($sessions, fn($a, $b) => strcmp($b['updated_at'] ?? '', $a['updated_at'] ?? ''));
     send_json(['sessions' => $sessions]);
@@ -219,6 +309,7 @@ if ($action === 'chat') {
     $message = $_POST['message'] ?? '';
     $project_id = $_POST['project_id'] ?? 'default';
     $session_id = $_POST['session_id'] ?? uniqid('s_');
+    prune_old_sessions($current_user, $project_id);
     $is_new_session = !file_exists($DATA_DIR . "/chat_{$current_user}_{$session_id}.json");
 
     echo json_encode(['status' => 'ping']) . "\n"; flush();
@@ -226,8 +317,25 @@ if ($action === 'chat') {
 
     // Plik
     $file_content = "";
-    if (isset($_FILES['file']) && $_FILES['file']['error'] === UPLOAD_ERR_OK) {
-        $file_content = "\n\n--- ZAŁĄCZNIK: {$_FILES['file']['name']} ---\n" . file_get_contents($_FILES['file']['tmp_name']) . "\n------\n";
+    if (isset($_FILES['file']) && $_FILES['file']['error'] !== UPLOAD_ERR_NO_FILE) {
+        if ($_FILES['file']['error'] !== UPLOAD_ERR_OK) {
+            echo json_encode(['status' => 'file_error', 'msg' => 'Błąd przesyłania pliku.']) . "\n"; flush(); exit;
+        }
+        if ($_FILES['file']['size'] > $MAX_UPLOAD_SIZE) {
+            echo json_encode(['status' => 'file_error', 'msg' => 'Plik przekracza 2MB.']) . "\n"; flush(); exit;
+        }
+
+        $finfo = finfo_open(FILEINFO_MIME_TYPE);
+        $mime = $finfo ? finfo_file($finfo, $_FILES['file']['tmp_name']) : '';
+        if ($finfo) finfo_close($finfo);
+
+        if ($mime && !in_array($mime, $ALLOWED_UPLOAD_MIME)) {
+            echo json_encode(['status' => 'file_error', 'msg' => 'Niedozwolony typ pliku. Dozwolone: TXT/MD/JSON/CSV.']) . "\n"; flush(); exit;
+        }
+
+        $raw_content = file_get_contents($_FILES['file']['tmp_name']);
+        $clean_content = sanitize_file_content($raw_content ?: '', $MAX_FILE_PROMPT_CHARS);
+        $file_content = "\n\n--- ZAŁĄCZNIK: {$_FILES['file']['name']} ---\n" . $clean_content . "\n------\n";
     }
 
     // Pamięć
@@ -248,6 +356,8 @@ if ($action === 'chat') {
         if ($scraped_content) {
             $url_context = "\n\n=== TREŚĆ POBRANA ZE STRONY ($url_to_scrape) ===\n$scraped_content\n=====================================\n";
             $scraped_success = true;
+        } else {
+            echo json_encode(['status' => 'scrape_error', 'msg' => 'Nie udało się pobrać treści strony.']) . "\n"; flush();
         }
     }
 
@@ -258,7 +368,8 @@ if ($action === 'chat') {
     // Jeśli nie udało się pobrać strony (lub nie było URL), a user chce szukać:
     if (($manual_search || preg_match('/(cena|kto|gdzie|kiedy|news)/i', $message)) && !$scraped_success) {
         echo json_encode(['status' => 'searching', 'msg' => 'Szukam w sieci...']) . "\n"; flush();
-        $tavily_res = search_tavily($message, $TAVILY_KEY);
+        $tavily_query = build_tavily_query($message);
+        $tavily_res = search_tavily($tavily_query, $TAVILY_KEY);
         if (!isset($tavily_res['error'])) {
             $internet_context = "\n\n=== WYNIKI WYSZUKIWANIA ===\n";
             if (!empty($tavily_res['results'])) {
@@ -268,6 +379,8 @@ if ($action === 'chat') {
             } else {
                 $internet_context .= "Brak wyników.\n";
             }
+        } else {
+            echo json_encode(['status' => 'search_error', 'msg' => $tavily_res['error']]) . "\n"; flush();
         }
     }
 
@@ -296,7 +409,9 @@ Nie bawisz się w uprzejmości AI. Działasz jak analityczny partner biznesowy.
 - **Język:** Polski (chyba że Rafi zapyta po angielsku).
 - **Styl:** Zwięzły, techniczny, "żołnierski". Bez lania wody.
 - **Kod:** Jeśli piszesz kod, ma być gotowy do wdrożenia (production-ready). Używaj bloków ```language.
-- **Brak wiedzy:** Jeśli czegoś nie ma w wynikach wyszukiwania ani na stronie, powiedz wprost: "Brak danych w źródłach". Nie halucynuj.
+- **Źródła online:** Jeśli dostępna jest sekcja "TREŚĆ POBRANA ZE STRONY" lub "WYNIKI WYSZUKIWANIA", opieraj się na nich w pierwszej kolejności i zawsze podawaj źródło w nawiasie kwadratowym (np. [example.com] lub [źródło: domena]).
+- **Brak wiedzy:** Jeśli czegoś nie ma w wynikach wyszukiwania ani na stronie, powiedz wprost: "Brak danych w źródłach". Nie halucynuj i nie dopowiadaj.
+- **Sprzeczności:** W przypadku konfliktu między treningiem a danymi z sieci/strony, wybieraj dane z sieci/strony. W przypadku sprzeczności między różnymi wynikami online, wskaż to i zaznacz brak pewności.
 - **Formatowanie:** Używaj pogrubień (**kluczowe wnioski**) i list wypunktowanych dla czytelności.
 
 ### AKTUALNA DATA:

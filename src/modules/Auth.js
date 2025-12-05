@@ -16,9 +16,9 @@ export const Auth = {
 
     login: async (username, password, onSuccessCallback) => {
         try {
-            const res = await fetch(`${CONFIG.API_URL}?action=login`, { 
-                method: 'POST', 
-                body: JSON.stringify({username, password}) 
+            const res = await fetch(`${CONFIG.API_URL}?action=login`, {
+                method: 'POST',
+                body: JSON.stringify({username, password})
             });
             if (!res.ok) throw new Error('Błędne dane logowania');
             
@@ -29,6 +29,33 @@ export const Auth = {
             
             Auth.init(onSuccessCallback);
             Toasts.show(`Witaj ponownie, ${data.username}`);
+        } catch (e) {
+            Toasts.show(e.message, 'error');
+        }
+    },
+
+    register: async () => {
+        const username = document.getElementById('login-user')?.value.trim();
+        const password = document.getElementById('login-pass')?.value.trim();
+
+        if (!username || !password) {
+            Toasts.show('Podaj login i hasło, aby założyć konto.', 'error');
+            return;
+        }
+
+        try {
+            const res = await fetch(`${CONFIG.API_URL}?action=register`, {
+                method: 'POST',
+                body: JSON.stringify({ username, password })
+            });
+
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.error || 'Rejestracja nie powiodła się');
+            }
+
+            Toasts.show('Konto utworzone. Logowanie...');
+            await Auth.login(username, password, () => window.location.reload());
         } catch (e) {
             Toasts.show(e.message, 'error');
         }

@@ -7,20 +7,30 @@ import { Modal } from '../ui/Modal.js';
 export const Chat = {
     // Stan wyszukiwania (domyślnie wyłączony)
     isSearchActive: false,
+    MAX_FILE_SIZE: 2 * 1024 * 1024,
+    ALLOWED_TYPES: ['text/plain', 'text/markdown', 'text/x-markdown', 'application/json', 'text/csv'],
+
+    isFileAllowed(file) {
+        if (!file) return true;
+        if (file.size > Chat.MAX_FILE_SIZE) return false;
+        if (!file.type) return true; // Niektóre przeglądarki nie podają typu; waliduje backend
+        return Chat.ALLOWED_TYPES.includes(file.type);
+    },
 
     // NOWA FUNKCJA: Przełącznik
-    toggleSearch: () => {
+    toggleSearch: (options = {}) => {
+        const { silent = false } = options;
         Chat.isSearchActive = !Chat.isSearchActive;
         const btn = document.getElementById('search-toggle');
-        
+
         if (Chat.isSearchActive) {
             // Włączony: Niebieski + Świecenie
             btn.className = "p-3 text-blue-400 drop-shadow-[0_0_8px_rgba(96,165,250,0.8)] transition flex-shrink-0 animate-pulse";
-            Toasts.show('Tryb Online: WŁĄCZONY');
+            if (!silent) Toasts.show('Tryb Online: WŁĄCZONY');
         } else {
             // Wyłączony: Szary
             btn.className = "p-3 text-gray-600 hover:text-blue-400 transition flex-shrink-0";
-            Toasts.show('Tryb Online: WYŁĄCZONY');
+            if (!silent) Toasts.show('Tryb Online: WYŁĄCZONY');
         }
     },
 
@@ -102,6 +112,11 @@ export const Chat = {
 
     handleFile: (input) => { /* ... bez zmian ... */
         if (input.files[0]) {
+            if (!Chat.isFileAllowed(input.files[0])) {
+                Toasts.show('Plik jest zbyt duży lub ma nieobsługiwany format (dozwolone: TXT/MD/JSON/CSV, max 2MB).', 'error');
+                Chat.clearFile();
+                return;
+            }
             const preview = document.getElementById('file-preview');
             const nameEl = document.getElementById('filename');
             if(preview && nameEl) { preview.classList.remove('hidden'); nameEl.innerText = input.files[0].name; }
@@ -124,6 +139,12 @@ export const Chat = {
 
         if (!txt && !file) return;
 
+        if (file && !Chat.isFileAllowed(file)) {
+            Toasts.show('Plik jest zbyt duży lub ma nieobsługiwany format (dozwolone: TXT/MD/JSON/CSV, max 2MB).', 'error');
+            Chat.clearFile();
+            return;
+        }
+
         Chat.renderMessage('user', txt + (file ? ` [Plik: ${file.name}]` : ''));
         if(inputEl) inputEl.value = '';
         Chat.clearFile();
@@ -139,10 +160,11 @@ export const Chat = {
         formData.append('use_search', Chat.isSearchActive ? '1' : '0');
 
         // OPCJONALNE: Reset przycisku po wysłaniu? (Na razie zostawiamy, użytkownik decyduje)
-        // Chat.toggleSearch(); 
+        // Chat.toggleSearch();
 
         const botBubble = Chat.renderMessage('assistant', '<span class="animate-pulse">Analizuję...</span>');
         let botText = "";
+        let searchNotices = "";
         const box = document.getElementById('chat-box');
         const isSmartScroll = () => box ? (box.scrollHeight - box.scrollTop) <= (box.clientHeight + 150) : false;
 
@@ -150,6 +172,7 @@ export const Chat = {
             const res = await fetch(`${CONFIG.API_URL}?action=chat`, { method: 'POST', body: formData });
             const reader = res.body.getReader();
             const decoder = new TextDecoder();
+            let halted = false;
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
@@ -159,26 +182,103 @@ export const Chat = {
                     if (!line.trim()) continue;
                     try {
                         const d = JSON.parse(line);
-                        if (d.status === 'session_init') { Store.set('currentSession', d.id); Chat.loadSessions(); } 
+                        if (d.status === 'session_init') { Store.set('currentSession', d.id); Chat.loadSessions(); }
                         else if (d.status === 'content') {
                             const shouldScroll = isSmartScroll();
                             botText += d.text;
                             if (botBubble) {
-                                botBubble.innerHTML = Render.markdown(botText);
+                                botBubble.innerHTML = Render.markdown(searchNotices + botText);
                                 if (botText.includes('```') && Render.highlightBlock) Render.highlightBlock(botBubble);
                             }
                             if (shouldScroll && box) box.scrollTop = box.scrollHeight;
-                        } 
+                        }
                         else if (d.status === 'searching') {
-                            if (botBubble) botBubble.innerHTML = '<div class="flex items-center gap-2 text-blue-400 text-xs animate-pulse"><span>🔍</span> Przeszukuję Internet...</div>';
+                            searchNotices += `> 🔍 ${d.msg || 'Przeszukuję Internet...'}\n\n`;
+                            if (botBubble) botBubble.innerHTML = Render.markdown(searchNotices + botText || '<span class="animate-pulse">Analizuję...</span>');
+                        }
+                        else if (d.status === 'search_error' || d.status === 'scrape_error') {
+                            searchNotices += `> ⚠️ ${d.msg || 'Błąd wyszukiwania.'}\n\n`;
+                            if (botBubble) botBubble.innerHTML = Render.markdown(searchNotices + botText || '<span class="animate-pulse">Analizuję...</span>');
+                        }
+                        else if (d.status === 'file_error') {
+                            halted = true;
+                            const warn = d.msg || 'Plik został odrzucony (format/rozmiar).';
+                            searchNotices += `> ⚠️ ${warn}\n\n`;
+                            if (botBubble) botBubble.innerHTML = Render.markdown(searchNotices || warn);
+                            Toasts.show(warn, 'error');
+                            break;
                         }
                     } catch (e) { }
                 }
+                if (halted) break;
             }
             if (botBubble && Render.highlightBlock) Render.highlightBlock(botBubble);
             if (box) box.scrollTop = box.scrollHeight;
         } catch (e) {
             if (botBubble) botBubble.innerHTML = '<span class="text-red-400">Błąd połączenia.</span>';
+        }
+    },
+
+    runUITests: () => {
+        const results = [];
+
+        const testToggle = () => {
+            const btn = document.getElementById('search-toggle');
+            if (!btn) return { ok: false, details: 'Brak przycisku #search-toggle' };
+            const initialState = Chat.isSearchActive;
+            const initialClass = btn.className;
+
+            Chat.toggleSearch({ silent: true });
+            const toggledState = Chat.isSearchActive !== initialState;
+            const toggledClassChanged = btn.className !== initialClass;
+
+            Chat.toggleSearch({ silent: true });
+            const restoredState = Chat.isSearchActive === initialState;
+            const restoredClass = btn.className === initialClass;
+
+            return {
+                ok: toggledState && toggledClassChanged && restoredState && restoredClass,
+                details: `Stan:${toggledState}/${restoredState} Klasy:${toggledClassChanged}/${restoredClass}`
+            };
+        };
+
+        const toggleResult = testToggle();
+        results.push({ name: 'Tryb online/offline (toggle)', ...toggleResult });
+
+        const summary = results.map(r => `${r.ok ? '✅' : '❌'} ${r.name} – ${r.details}`).join('\n');
+        if (results.every(r => r.ok)) {
+            Toasts.show('Testy UI OK');
+            console.log(summary);
+        } else {
+            Toasts.show('Błędy testów UI – sprawdź konsolę', 'error');
+            console.warn(summary);
+        }
+        return results;
+    },
+
+    download: async () => {
+        const sid = Store.get('currentSession');
+        if (!sid) { Toasts.show('Brak rozmowy do pobrania.', 'error'); return; }
+
+        try {
+            const res = await fetch(`${CONFIG.API_URL}?action=get_chat_history&session_id=${sid}`, { headers: {'Authorization': Store.get('token')} });
+            if (!res.ok) throw new Error('Nie udało się pobrać historii.');
+            const d = await res.json();
+            const history = d.history || [];
+            if (!history.length) { Toasts.show('Historia jest pusta.', 'error'); return; }
+
+            const lines = history.map(h => `${h.role === 'assistant' ? 'AI' : 'Użytkownik'}: ${h.content}`);
+            const blob = new Blob([lines.join('\n\n')], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'chat.txt';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+        } catch (e) {
+            Toasts.show(e.message || 'Błąd podczas pobierania rozmowy.', 'error');
         }
     }
 };
