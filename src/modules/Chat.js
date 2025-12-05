@@ -18,18 +18,19 @@ export const Chat = {
     },
 
     // NOWA FUNKCJA: Przełącznik
-    toggleSearch: () => {
+    toggleSearch: (options = {}) => {
+        const { silent = false } = options;
         Chat.isSearchActive = !Chat.isSearchActive;
         const btn = document.getElementById('search-toggle');
-        
+
         if (Chat.isSearchActive) {
             // Włączony: Niebieski + Świecenie
             btn.className = "p-3 text-blue-400 drop-shadow-[0_0_8px_rgba(96,165,250,0.8)] transition flex-shrink-0 animate-pulse";
-            Toasts.show('Tryb Online: WŁĄCZONY');
+            if (!silent) Toasts.show('Tryb Online: WŁĄCZONY');
         } else {
             // Wyłączony: Szary
             btn.className = "p-3 text-gray-600 hover:text-blue-400 transition flex-shrink-0";
-            Toasts.show('Tryb Online: WYŁĄCZONY');
+            if (!silent) Toasts.show('Tryb Online: WYŁĄCZONY');
         }
     },
 
@@ -216,6 +217,43 @@ export const Chat = {
         } catch (e) {
             if (botBubble) botBubble.innerHTML = '<span class="text-red-400">Błąd połączenia.</span>';
         }
+    },
+
+    runUITests: () => {
+        const results = [];
+
+        const testToggle = () => {
+            const btn = document.getElementById('search-toggle');
+            if (!btn) return { ok: false, details: 'Brak przycisku #search-toggle' };
+            const initialState = Chat.isSearchActive;
+            const initialClass = btn.className;
+
+            Chat.toggleSearch({ silent: true });
+            const toggledState = Chat.isSearchActive !== initialState;
+            const toggledClassChanged = btn.className !== initialClass;
+
+            Chat.toggleSearch({ silent: true });
+            const restoredState = Chat.isSearchActive === initialState;
+            const restoredClass = btn.className === initialClass;
+
+            return {
+                ok: toggledState && toggledClassChanged && restoredState && restoredClass,
+                details: `Stan:${toggledState}/${restoredState} Klasy:${toggledClassChanged}/${restoredClass}`
+            };
+        };
+
+        const toggleResult = testToggle();
+        results.push({ name: 'Tryb online/offline (toggle)', ...toggleResult });
+
+        const summary = results.map(r => `${r.ok ? '✅' : '❌'} ${r.name} – ${r.details}`).join('\n');
+        if (results.every(r => r.ok)) {
+            Toasts.show('Testy UI OK');
+            console.log(summary);
+        } else {
+            Toasts.show('Błędy testów UI – sprawdź konsolę', 'error');
+            console.warn(summary);
+        }
+        return results;
     },
 
     download: async () => {

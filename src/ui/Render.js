@@ -17,11 +17,22 @@ export const Render = {
         }
     },
 
-    // PUSTA funkcja highlight (żeby Chat.js nie wyrzucał błędu, że funkcja nie istnieje)
     highlightBlock: (element) => {
-        // Funkcja wyłączona dla stabilności. 
-        // Jeśli chcesz przywrócić kolory, upewnij się że highlight.js ładuje się w <head>
-        return; 
+        if (!element) return;
+        try {
+            if (!window.hljs || !window.hljs.highlightElement) return;
+            const blocks = element.querySelectorAll('pre code');
+            if (!blocks || blocks.length === 0) return;
+            blocks.forEach((block) => {
+                try {
+                    window.hljs.highlightElement(block);
+                } catch (e) {
+                    console.warn('Highlight error on block', e);
+                }
+            });
+        } catch (e) {
+            console.warn('Highlight error', e);
+        }
     },
 
     userMessage: (text) => {
