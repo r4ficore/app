@@ -275,6 +275,8 @@ if ($action === 'chat') {
         if ($scraped_content) {
             $url_context = "\n\n=== TREŚĆ POBRANA ZE STRONY ($url_to_scrape) ===\n$scraped_content\n=====================================\n";
             $scraped_success = true;
+        } else {
+            echo json_encode(['status' => 'scrape_error', 'msg' => 'Nie udało się pobrać treści strony.']) . "\n"; flush();
         }
     }
 
@@ -296,6 +298,8 @@ if ($action === 'chat') {
             } else {
                 $internet_context .= "Brak wyników.\n";
             }
+        } else {
+            echo json_encode(['status' => 'search_error', 'msg' => $tavily_res['error']]) . "\n"; flush();
         }
     }
 
@@ -324,7 +328,9 @@ Nie bawisz się w uprzejmości AI. Działasz jak analityczny partner biznesowy.
 - **Język:** Polski (chyba że Rafi zapyta po angielsku).
 - **Styl:** Zwięzły, techniczny, "żołnierski". Bez lania wody.
 - **Kod:** Jeśli piszesz kod, ma być gotowy do wdrożenia (production-ready). Używaj bloków ```language.
-- **Brak wiedzy:** Jeśli czegoś nie ma w wynikach wyszukiwania ani na stronie, powiedz wprost: "Brak danych w źródłach". Nie halucynuj.
+- **Źródła online:** Jeśli dostępna jest sekcja "TREŚĆ POBRANA ZE STRONY" lub "WYNIKI WYSZUKIWANIA", opieraj się na nich w pierwszej kolejności i zawsze podawaj źródło w nawiasie kwadratowym (np. [example.com] lub [źródło: domena]).
+- **Brak wiedzy:** Jeśli czegoś nie ma w wynikach wyszukiwania ani na stronie, powiedz wprost: "Brak danych w źródłach". Nie halucynuj i nie dopowiadaj.
+- **Sprzeczności:** W przypadku konfliktu między treningiem a danymi z sieci/strony, wybieraj dane z sieci/strony. W przypadku sprzeczności między różnymi wynikami online, wskaż to i zaznacz brak pewności.
 - **Formatowanie:** Używaj pogrubień (**kluczowe wnioski**) i list wypunktowanych dla czytelności.
 
 ### AKTUALNA DATA:

@@ -139,10 +139,11 @@ export const Chat = {
         formData.append('use_search', Chat.isSearchActive ? '1' : '0');
 
         // OPCJONALNE: Reset przycisku po wysłaniu? (Na razie zostawiamy, użytkownik decyduje)
-        // Chat.toggleSearch(); 
+        // Chat.toggleSearch();
 
         const botBubble = Chat.renderMessage('assistant', '<span class="animate-pulse">Analizuję...</span>');
         let botText = "";
+        let searchNotices = "";
         const box = document.getElementById('chat-box');
         const isSmartScroll = () => box ? (box.scrollHeight - box.scrollTop) <= (box.clientHeight + 150) : false;
 
@@ -159,18 +160,23 @@ export const Chat = {
                     if (!line.trim()) continue;
                     try {
                         const d = JSON.parse(line);
-                        if (d.status === 'session_init') { Store.set('currentSession', d.id); Chat.loadSessions(); } 
+                        if (d.status === 'session_init') { Store.set('currentSession', d.id); Chat.loadSessions(); }
                         else if (d.status === 'content') {
                             const shouldScroll = isSmartScroll();
                             botText += d.text;
                             if (botBubble) {
-                                botBubble.innerHTML = Render.markdown(botText);
+                                botBubble.innerHTML = Render.markdown(searchNotices + botText);
                                 if (botText.includes('```') && Render.highlightBlock) Render.highlightBlock(botBubble);
                             }
                             if (shouldScroll && box) box.scrollTop = box.scrollHeight;
-                        } 
+                        }
                         else if (d.status === 'searching') {
-                            if (botBubble) botBubble.innerHTML = '<div class="flex items-center gap-2 text-blue-400 text-xs animate-pulse"><span>🔍</span> Przeszukuję Internet...</div>';
+                            searchNotices += `> 🔍 ${d.msg || 'Przeszukuję Internet...'}\n\n`;
+                            if (botBubble) botBubble.innerHTML = Render.markdown(searchNotices + botText || '<span class="animate-pulse">Analizuję...</span>');
+                        }
+                        else if (d.status === 'search_error' || d.status === 'scrape_error') {
+                            searchNotices += `> ⚠️ ${d.msg || 'Błąd wyszukiwania.'}\n\n`;
+                            if (botBubble) botBubble.innerHTML = Render.markdown(searchNotices + botText || '<span class="animate-pulse">Analizuję...</span>');
                         }
                     } catch (e) { }
                 }
