@@ -8,11 +8,19 @@ ini_set('implicit_flush', 1);
 error_reporting(0);
 ini_set('display_errors', 0);
 
-$DEEPSEEK_KEY = "sk-f5095ebe51da4b30841efe2faf256745";
-$TAVILY_KEY = "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";
-$DATA_DIR = __DIR__ . '/data';
+$env = function(string $key, $default = '') {
+    $val = getenv($key);
+    return ($val !== false && $val !== '') ? $val : $default;
+};
+
+$DEEPSEEK_KEY = $env('DEEPSEEK_KEY', "sk-f5095ebe51da4b30841efe2faf256745");
+$TAVILY_KEY = $env('TAVILY_KEY', "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");
+$DATA_DIR = rtrim($env('DATA_DIR', __DIR__ . '/data'), '/');
 $MEMORY_LIMIT = 20000;
 $PROJECT_LIMIT = 2;
+$MAX_UPLOAD_SIZE = 2 * 1024 * 1024; // 2MB
+$ALLOWED_UPLOAD_MIME = ['text/plain', 'text/markdown', 'text/x-markdown', 'application/json', 'text/csv'];
+$MAX_FILE_PROMPT_CHARS = 12000;
 
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: POST, GET, OPTIONS");
@@ -37,6 +45,13 @@ function save_json($filename, $data) {
     file_put_contents($DATA_DIR . '/' . basename($filename), json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
 }
 
+function sanitize_file_content(string $content, int $maxLen) {
+    // Usuń znaki kontrolne (poza nową linią/tab) i przytnij do bezpiecznej długości
+    $content = preg_replace('/[\x00-\x08\x0B-\x1F\x7F]/u', '', $content);
+    $content = mb_substr($content, 0, $maxLen);
+    return $content;
+}
+
 function send_json($data) {
     while (ob_get_level()) { ob_end_clean(); }
     header('Content-Type: application/json; charset=utf-8');
@@ -51,6 +66,10 @@ function send_error($msg, $code = 400) {
 
 // 1. Tavily (Szukanie ogólne)
 function search_tavily($query, $api_key) {
+    if (empty($api_key)) {
+        return ['error' => 'Brak klucza Tavily API'];
+    }
+
     $ch = curl_init('https://api.tavily.com/search');
     $data = json_encode([
         'api_key' => $api_key,
@@ -72,6 +91,24 @@ function search_tavily($query, $api_key) {
 
     if ($http_code !== 200) return ['error' => "API Error: $http_code"];
     return json_decode($response, true) ?? ['results' => []];
+}
+
+function build_tavily_query(string $message): string {
+    $trimmed = trim($message);
+
+    if (preg_match('/\bhttps?:\/\/[^\s]+/i', $trimmed, $matches)) {
+        $url = $matches[0];
+        $without_url = trim(str_replace($url, '', $trimmed));
+        $host = parse_url($url, PHP_URL_HOST) ?: $url;
+
+        if (!empty($without_url)) {
+            return $without_url . " (źródło: {$host})";
+        }
+
+        return "Najważniejsze informacje ze strony {$host} ({$url})";
+    }
+
+    return $trimmed;
 }
 
 // 2. Simple Scraper (Wchodzenie w linki bezpośrednio)
@@ -226,8 +263,25 @@ if ($action === 'chat') {
 
     // Plik
     $file_content = "";
-    if (isset($_FILES['file']) && $_FILES['file']['error'] === UPLOAD_ERR_OK) {
-        $file_content = "\n\n--- ZAŁĄCZNIK: {$_FILES['file']['name']} ---\n" . file_get_contents($_FILES['file']['tmp_name']) . "\n------\n";
+    if (isset($_FILES['file']) && $_FILES['file']['error'] !== UPLOAD_ERR_NO_FILE) {
+        if ($_FILES['file']['error'] !== UPLOAD_ERR_OK) {
+            echo json_encode(['status' => 'file_error', 'msg' => 'Błąd przesyłania pliku.']) . "\n"; flush(); exit;
+        }
+        if ($_FILES['file']['size'] > $MAX_UPLOAD_SIZE) {
+            echo json_encode(['status' => 'file_error', 'msg' => 'Plik przekracza 2MB.']) . "\n"; flush(); exit;
+        }
+
+        $finfo = finfo_open(FILEINFO_MIME_TYPE);
+        $mime = $finfo ? finfo_file($finfo, $_FILES['file']['tmp_name']) : '';
+        if ($finfo) finfo_close($finfo);
+
+        if ($mime && !in_array($mime, $ALLOWED_UPLOAD_MIME)) {
+            echo json_encode(['status' => 'file_error', 'msg' => 'Niedozwolony typ pliku. Dozwolone: TXT/MD/JSON/CSV.']) . "\n"; flush(); exit;
+        }
+
+        $raw_content = file_get_contents($_FILES['file']['tmp_name']);
+        $clean_content = sanitize_file_content($raw_content ?: '', $MAX_FILE_PROMPT_CHARS);
+        $file_content = "\n\n--- ZAŁĄCZNIK: {$_FILES['file']['name']} ---\n" . $clean_content . "\n------\n";
     }
 
     // Pamięć
@@ -248,6 +302,8 @@ if ($action === 'chat') {
         if ($scraped_content) {
             $url_context = "\n\n=== TREŚĆ POBRANA ZE STRONY ($url_to_scrape) ===\n$scraped_content\n=====================================\n";
             $scraped_success = true;
+        } else {
+            echo json_encode(['status' => 'scrape_error', 'msg' => 'Nie udało się pobrać treści strony.']) . "\n"; flush();
         }
     }
 
@@ -258,7 +314,8 @@ if ($action === 'chat') {
     // Jeśli nie udało się pobrać strony (lub nie było URL), a user chce szukać:
     if (($manual_search || preg_match('/(cena|kto|gdzie|kiedy|news)/i', $message)) && !$scraped_success) {
         echo json_encode(['status' => 'searching', 'msg' => 'Szukam w sieci...']) . "\n"; flush();
-        $tavily_res = search_tavily($message, $TAVILY_KEY);
+        $tavily_query = build_tavily_query($message);
+        $tavily_res = search_tavily($tavily_query, $TAVILY_KEY);
         if (!isset($tavily_res['error'])) {
             $internet_context = "\n\n=== WYNIKI WYSZUKIWANIA ===\n";
             if (!empty($tavily_res['results'])) {
@@ -268,6 +325,8 @@ if ($action === 'chat') {
             } else {
                 $internet_context .= "Brak wyników.\n";
             }
+        } else {
+            echo json_encode(['status' => 'search_error', 'msg' => $tavily_res['error']]) . "\n"; flush();
         }
     }
 
@@ -296,7 +355,9 @@ Nie bawisz się w uprzejmości AI. Działasz jak analityczny partner biznesowy.
 - **Język:** Polski (chyba że Rafi zapyta po angielsku).
 - **Styl:** Zwięzły, techniczny, "żołnierski". Bez lania wody.
 - **Kod:** Jeśli piszesz kod, ma być gotowy do wdrożenia (production-ready). Używaj bloków ```language.
-- **Brak wiedzy:** Jeśli czegoś nie ma w wynikach wyszukiwania ani na stronie, powiedz wprost: "Brak danych w źródłach". Nie halucynuj.
+- **Źródła online:** Jeśli dostępna jest sekcja "TREŚĆ POBRANA ZE STRONY" lub "WYNIKI WYSZUKIWANIA", opieraj się na nich w pierwszej kolejności i zawsze podawaj źródło w nawiasie kwadratowym (np. [example.com] lub [źródło: domena]).
+- **Brak wiedzy:** Jeśli czegoś nie ma w wynikach wyszukiwania ani na stronie, powiedz wprost: "Brak danych w źródłach". Nie halucynuj i nie dopowiadaj.
+- **Sprzeczności:** W przypadku konfliktu między treningiem a danymi z sieci/strony, wybieraj dane z sieci/strony. W przypadku sprzeczności między różnymi wynikami online, wskaż to i zaznacz brak pewności.
 - **Formatowanie:** Używaj pogrubień (**kluczowe wnioski**) i list wypunktowanych dla czytelności.
 
 ### AKTUALNA DATA:
