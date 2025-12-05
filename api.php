@@ -8,9 +8,14 @@ ini_set('implicit_flush', 1);
 error_reporting(0);
 ini_set('display_errors', 0);
 
-$DEEPSEEK_KEY = "sk-f5095ebe51da4b30841efe2faf256745";
-$TAVILY_KEY = "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";
-$DATA_DIR = __DIR__ . '/data';
+$env = function(string $key, $default = '') {
+    $val = getenv($key);
+    return ($val !== false && $val !== '') ? $val : $default;
+};
+
+$DEEPSEEK_KEY = $env('DEEPSEEK_KEY', "sk-f5095ebe51da4b30841efe2faf256745");
+$TAVILY_KEY = $env('TAVILY_KEY', "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");
+$DATA_DIR = rtrim($env('DATA_DIR', __DIR__ . '/data'), '/');
 $MEMORY_LIMIT = 20000;
 $PROJECT_LIMIT = 2;
 
@@ -51,6 +56,10 @@ function send_error($msg, $code = 400) {
 
 // 1. Tavily (Szukanie ogólne)
 function search_tavily($query, $api_key) {
+    if (empty($api_key)) {
+        return ['error' => 'Brak klucza Tavily API'];
+    }
+
     $ch = curl_init('https://api.tavily.com/search');
     $data = json_encode([
         'api_key' => $api_key,
@@ -72,6 +81,24 @@ function search_tavily($query, $api_key) {
 
     if ($http_code !== 200) return ['error' => "API Error: $http_code"];
     return json_decode($response, true) ?? ['results' => []];
+}
+
+function build_tavily_query(string $message): string {
+    $trimmed = trim($message);
+
+    if (preg_match('/\bhttps?:\/\/[^\s]+/i', $trimmed, $matches)) {
+        $url = $matches[0];
+        $without_url = trim(str_replace($url, '', $trimmed));
+        $host = parse_url($url, PHP_URL_HOST) ?: $url;
+
+        if (!empty($without_url)) {
+            return $without_url . " (źródło: {$host})";
+        }
+
+        return "Najważniejsze informacje ze strony {$host} ({$url})";
+    }
+
+    return $trimmed;
 }
 
 // 2. Simple Scraper (Wchodzenie w linki bezpośrednio)
@@ -258,7 +285,8 @@ if ($action === 'chat') {
     // Jeśli nie udało się pobrać strony (lub nie było URL), a user chce szukać:
     if (($manual_search || preg_match('/(cena|kto|gdzie|kiedy|news)/i', $message)) && !$scraped_success) {
         echo json_encode(['status' => 'searching', 'msg' => 'Szukam w sieci...']) . "\n"; flush();
-        $tavily_res = search_tavily($message, $TAVILY_KEY);
+        $tavily_query = build_tavily_query($message);
+        $tavily_res = search_tavily($tavily_query, $TAVILY_KEY);
         if (!isset($tavily_res['error'])) {
             $internet_context = "\n\n=== WYNIKI WYSZUKIWANIA ===\n";
             if (!empty($tavily_res['results'])) {
