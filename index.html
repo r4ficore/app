@@ -289,6 +289,59 @@
       margin-bottom: 0.75rem;
     }
 
+    #microphone-btn.recording {
+      color: #22c55e;
+      animation: pulse 1.3s ease-in-out infinite;
+    }
+
+    #voice-visualizer .bar {
+      width: 4px;
+      border-radius: 999px;
+      background: linear-gradient(180deg, #60a5fa, #d6b376);
+      animation: bounce 1s ease-in-out infinite;
+    }
+
+    #voice-visualizer .bar:nth-child(2) {
+      animation-delay: 0.15s;
+    }
+
+    #voice-visualizer .bar:nth-child(3) {
+      animation-delay: 0.3s;
+    }
+
+    #copy-tooltip {
+      transition: all 0.2s ease;
+      opacity: 0;
+      transform: translateY(4px);
+    }
+
+    #copy-tooltip.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    @keyframes bounce {
+      0%,
+      100% {
+        transform: scaleY(0.6);
+      }
+      50% {
+        transform: scaleY(1.2);
+      }
+    }
+
+    @keyframes pulse {
+      0% {
+        transform: scale(1);
+      }
+      50% {
+        transform: scale(1.08);
+      }
+      100% {
+        transform: scale(1);
+      }
+    }
+
     #chat-form:focus-within {
       border-color: rgba(214, 179, 118, 0.9);
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1),
@@ -829,9 +882,10 @@
             placeholder="Pisz..."
           />
 
-          <!-- Mikrofon (na razie bez logiki) -->
+            <!-- Mikrofon z transkrypcją głosu -->
           <button
             type="button"
+            id="microphone-btn"
             class="p-3 text-gray-500 hover:text-white transition flex-shrink-0"
             title="Nagraj wiadomość"
           >
@@ -871,6 +925,51 @@
             </svg>
           </button>
         </form>
+
+        <div class="max-w-4xl mx-auto mt-3 px-3 md:px-4 space-y-2">
+          <div class="flex items-center justify-between text-[11px] uppercase tracking-[0.16em] text-gray-500">
+            <div class="flex items-center gap-2">
+              <span>Transkrypcja głosowa</span>
+              <div
+                id="voice-visualizer"
+                class="items-end gap-1 h-4 hidden"
+                aria-hidden="true"
+              >
+                <div class="bar h-2"></div>
+                <div class="bar h-3"></div>
+                <div class="bar h-2"></div>
+              </div>
+            </div>
+            <div class="flex items-center gap-2 text-gray-400">
+              <button
+                id="copy-btn"
+                type="button"
+                class="px-2 py-1 rounded-md border border-white/10 hover:border-white/20 hover:text-white transition"
+              >
+                Kopiuj
+              </button>
+              <span
+                id="copy-tooltip"
+                class="text-green-400 text-[10px] font-semibold"
+                aria-live="polite"
+              >
+                Skopiowano!
+              </span>
+              <button
+                id="clear-transcription-btn"
+                type="button"
+                class="px-2 py-1 rounded-md border border-white/10 hover:border-white/20 hover:text-white transition"
+              >
+                Wyczyść
+              </button>
+            </div>
+          </div>
+          <textarea
+            id="transcription-textarea"
+            class="w-full min-h-[84px] glass-input rounded-xl p-3 text-sm resize-y"
+            placeholder="Nagraj wiadomość, a transkrypcja pojawi się tutaj..."
+          ></textarea>
+        </div>
       </div>
     </div>
 
@@ -992,5 +1091,106 @@
   </div>
 
   <script type="module" src="./src/core/App.js?v=RESET_1"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const microphoneBtn = document.getElementById('microphone-btn');
+      const copyBtn = document.getElementById('copy-btn');
+      const transcriptionTextarea = document.getElementById('transcription-textarea');
+      const voiceVisualizer = document.getElementById('voice-visualizer');
+      const copyTooltip = document.getElementById('copy-tooltip');
+      const clearTranscriptionBtn = document.getElementById('clear-transcription-btn');
+      const chatInput = document.getElementById('msg-input');
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+      if (!SpeechRecognition) {
+        if (transcriptionTextarea)
+          transcriptionTextarea.placeholder = 'Twoja przeglądarka nie wspiera tej funkcji.';
+        if (microphoneBtn) microphoneBtn.disabled = true;
+        if (copyBtn) copyBtn.disabled = true;
+        return;
+      }
+
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'pl-PL';
+
+      let isRecording = false;
+      let finalTranscript = '';
+
+      recognition.onresult = (event) => {
+        let interimTranscript = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            finalTranscript += transcript + ' ';
+          } else {
+            interimTranscript += transcript;
+          }
+        }
+
+        const combined = finalTranscript + interimTranscript;
+        if (transcriptionTextarea) {
+          transcriptionTextarea.value = combined;
+        }
+        if (chatInput) {
+          chatInput.value = combined.trim();
+        }
+      };
+
+      recognition.onerror = (event) => {
+        console.error('Błąd rozpoznawania mowy:', event.error);
+      };
+
+      if (microphoneBtn) {
+        microphoneBtn.addEventListener('click', () => {
+          if (isRecording) {
+            recognition.stop();
+            microphoneBtn.classList.remove('recording');
+            if (voiceVisualizer) {
+              voiceVisualizer.classList.add('hidden');
+              voiceVisualizer.classList.remove('flex');
+            }
+            microphoneBtn.title = 'Rozpocznij nagrywanie';
+          } else {
+            finalTranscript = '';
+            if (transcriptionTextarea) transcriptionTextarea.value = '';
+            if (chatInput) chatInput.value = '';
+            recognition.start();
+            microphoneBtn.classList.add('recording');
+            if (voiceVisualizer) {
+              voiceVisualizer.classList.remove('hidden');
+              voiceVisualizer.classList.add('flex');
+            }
+            microphoneBtn.title = 'Zatrzymaj nagrywanie';
+          }
+          isRecording = !isRecording;
+        });
+      }
+
+      if (copyBtn) {
+        copyBtn.addEventListener('click', () => {
+          if (!transcriptionTextarea || !transcriptionTextarea.value) return;
+          navigator.clipboard
+            .writeText(transcriptionTextarea.value)
+            .then(() => {
+              if (copyTooltip) {
+                copyTooltip.classList.add('show');
+                setTimeout(() => copyTooltip.classList.remove('show'), 2000);
+              }
+            })
+            .catch((err) => console.error('Błąd kopiowania:', err));
+        });
+      }
+
+      if (clearTranscriptionBtn && transcriptionTextarea) {
+        clearTranscriptionBtn.addEventListener('click', () => {
+          transcriptionTextarea.value = '';
+          if (chatInput) chatInput.value = '';
+          finalTranscript = '';
+        });
+      }
+    });
+  </script>
 </body>
 </html>
