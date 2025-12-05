@@ -18,6 +18,7 @@ $TAVILY_KEY = $env('TAVILY_KEY', "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");
 $DATA_DIR = rtrim($env('DATA_DIR', __DIR__ . '/data'), '/');
 $MEMORY_LIMIT = 20000;
 $PROJECT_LIMIT = 2;
+$SESSION_TTL_DAYS = intval($env('SESSION_TTL_DAYS', 30));
 $MAX_UPLOAD_SIZE = 2 * 1024 * 1024; // 2MB
 $ALLOWED_UPLOAD_MIME = ['text/plain', 'text/markdown', 'text/x-markdown', 'application/json', 'text/csv'];
 $MAX_FILE_PROMPT_CHARS = 12000;
@@ -82,8 +83,8 @@ function search_tavily($query, $api_key) {
     curl_setopt($ch, CURLOPT_POST, true);
     curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
     curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
-    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 1);
     
     $response = curl_exec($ch);
     $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -120,8 +121,8 @@ function simple_scrape($url) {
     curl_setopt($ch, CURLOPT_TIMEOUT, 15);
     // Udajemy przeglądarkę, żeby nas nie zablokowali
     curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
-    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 1);
     
     $html = curl_exec($ch);
     $error = curl_error($ch);
@@ -138,9 +139,60 @@ function simple_scrape($url) {
     return mb_substr(trim($text), 0, 15000); // Limit znaków dla modelu
 }
 
+function prune_old_sessions(string $user, string $projectId) {
+    global $SESSION_TTL_DAYS, $DATA_DIR;
+
+    if ($SESSION_TTL_DAYS <= 0) return;
+
+    $file = "sessions_list_{$user}_{$projectId}.json";
+    $list = get_json($file);
+    if (empty($list)) return;
+
+    $threshold = (new DateTimeImmutable())->modify("-{$SESSION_TTL_DAYS} days");
+    $updated_list = [];
+
+    foreach ($list as $session) {
+        $updated = $session['updated_at'] ?? $session['created_at'] ?? null;
+        $updated_dt = $updated ? DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $updated) : false;
+
+        if ($updated_dt && $updated_dt < $threshold) {
+            @unlink($DATA_DIR . '/' . basename("chat_{$user}_{$session['id']}.json"));
+            continue;
+        }
+
+        $updated_list[] = $session;
+    }
+
+    if ($updated_list !== $list) {
+        save_json($file, $updated_list);
+    }
+}
+
 // --- LOGIKA ENDPOINTÓW ---
 $action = $_GET['action'] ?? '';
 $input = json_decode(file_get_contents('php://input'), true);
+
+// Health check (public, bez wrażliwych danych)
+if ($action === 'health') {
+    $health = [
+        'status' => 'ok',
+        'time' => date('c'),
+        'data_dir' => [
+            'exists' => is_dir($DATA_DIR),
+            'writable' => is_writable($DATA_DIR)
+        ],
+        'dependencies' => [
+            'curl' => function_exists('curl_version'),
+            'json' => function_exists('json_encode')
+        ],
+        'api_keys' => [
+            'deepseek_configured' => !empty($DEEPSEEK_KEY),
+            'tavily_configured' => !empty($TAVILY_KEY)
+        ]
+    ];
+
+    send_json($health);
+}
 
 // Auth & Users
 if ($action === 'register') {
@@ -227,6 +279,7 @@ if ($action === 'update_memory') {
 
 if ($action === 'get_sessions') {
     $pid = $_GET['project_id'] ?? '';
+    prune_old_sessions($current_user, $pid);
     $sessions = get_json("sessions_list_{$current_user}_{$pid}.json");
     usort($sessions, fn($a, $b) => strcmp($b['updated_at'] ?? '', $a['updated_at'] ?? ''));
     send_json(['sessions' => $sessions]);
@@ -256,6 +309,7 @@ if ($action === 'chat') {
     $message = $_POST['message'] ?? '';
     $project_id = $_POST['project_id'] ?? 'default';
     $session_id = $_POST['session_id'] ?? uniqid('s_');
+    prune_old_sessions($current_user, $project_id);
     $is_new_session = !file_exists($DATA_DIR . "/chat_{$current_user}_{$session_id}.json");
 
     echo json_encode(['status' => 'ping']) . "\n"; flush();
