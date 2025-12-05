@@ -99,7 +99,7 @@ export const Modal = {
                     const k = kIn.value.trim();
                     const v = vIn.value.trim();
                     if(!k || !v) return Toasts.show('Wypełnij oba pola', 'error');
-                    Modal.close({ key: k, value: v });
+                    Modal.close({ key: k, value: v, originalKey: arg1 });
                 };
             });
         }
