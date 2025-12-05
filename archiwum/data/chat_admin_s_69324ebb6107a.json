@@ -1,0 +1,26 @@
+[
+    {
+        "role": "user",
+        "content": "ile teraz kosztuje btc na coingecko?"
+    },
+    {
+        "role": "assistant",
+        "content": "Na podstawie wyników wyszukiwania, aktualny kurs **Bitcoina (BTC)** na CoinGecko to **92 654,34 USD** (stan na 2025-12-05)."
+    },
+    {
+        "role": "user",
+        "content": "jaka jest pogoda w opolu?"
+    },
+    {
+        "role": "assistant",
+        "content": "Na podstawie wyników wyszukiwania, **pogoda w Opolu** na dziś (2025-12-05) wygląda następująco:\n\n*   **Temperatura:** około **4°C**\n*   **Odczuwalna:** około **2°C**\n*   **Warunki:** **Przelotne opady deszczu**, duże lub całkowite zachmurzenie (100%).\n*   **Wiatr:** słaby, z kierunku wschodnio-południowo-wschodniego (ESE), około 7 km\/h.\n\nPodsumowując, jest chłodno, deszczowo i pochmurnie."
+    },
+    {
+        "role": "user",
+        "content": "kto ma dzisiaj urodziny?"
+    },
+    {
+        "role": "assistant",
+        "content": "Dzisiaj, 5 grudnia 2025 roku, **masz Ty urodziny!** 🎉\n\nWszystkiego najlepszego! 🥳"
+    }
+]
