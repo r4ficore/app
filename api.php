@@ -13,15 +13,19 @@ $env = function(string $key, $default = '') {
     return ($val !== false && $val !== '') ? $val : $default;
 };
 
-$DEEPSEEK_KEY = $env('DEEPSEEK_KEY', "sk-f5095ebe51da4b30841efe2faf256745");
-$TAVILY_KEY = $env('TAVILY_KEY', "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");
+$DEEPSEEK_KEY = $env('DEEPSEEK_KEY');
+$TAVILY_KEY = $env('TAVILY_KEY');
 $DATA_DIR = rtrim($env('DATA_DIR', __DIR__ . '/data'), '/');
 $MEMORY_LIMIT = 20000;
 $PROJECT_LIMIT = 2;
 $SESSION_TTL_DAYS = intval($env('SESSION_TTL_DAYS', 30));
 $MAX_UPLOAD_SIZE = 2 * 1024 * 1024; // 2MB
-$ALLOWED_UPLOAD_MIME = ['text/plain', 'text/markdown', 'text/x-markdown', 'application/json', 'text/csv'];
+$ALLOWED_UPLOAD_MIME = [
+    'text/plain', 'text/markdown', 'text/x-markdown', 'application/json', 'text/csv', 'application/pdf'
+];
 $MAX_FILE_PROMPT_CHARS = 12000;
+$MAX_DOCUMENT_STORE_CHARS = 50000;
+$PDFTOTEXT_BIN = $env('PDFTOTEXT_BIN', 'pdftotext');
 
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: POST, GET, OPTIONS");
@@ -29,8 +33,22 @@ header("Access-Control-Allow-Headers: Content-Type, Authorization");
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { exit(0); }
 if (!file_exists($DATA_DIR)) { mkdir($DATA_DIR, 0755, true); }
+$logDir = $DATA_DIR . '/logs';
+if (!file_exists($logDir)) { mkdir($logDir, 0755, true); }
+
+$missing_keys = [];
+if (empty($DEEPSEEK_KEY)) { $missing_keys[] = 'DEEPSEEK_KEY'; }
+if (!empty($missing_keys)) {
+    http_response_code(500);
+    send_json(['error' => 'Brak wymaganych kluczy API: ' . implode(', ', $missing_keys)]);
+}
 
 // --- HELPERY ---
+function log_error(string $message): void {
+    global $logDir;
+    $line = '[' . date('Y-m-d H:i:s') . "] " . $message . "\n";
+    @file_put_contents($logDir . '/errors.log', $line, FILE_APPEND);
+}
 function get_json($filename) {
     global $DATA_DIR;
     $path = $DATA_DIR . '/' . basename($filename);
@@ -51,6 +69,89 @@ function sanitize_file_content(string $content, int $maxLen) {
     $content = preg_replace('/[\x00-\x08\x0B-\x1F\x7F]/u', '', $content);
     $content = mb_substr($content, 0, $maxLen);
     return $content;
+}
+
+function extract_file_text(string $path, string $mime): array {
+    global $PDFTOTEXT_BIN, $MAX_DOCUMENT_STORE_CHARS, $MAX_FILE_PROMPT_CHARS;
+
+    $name = basename($path);
+    $raw_content = '';
+    $warning = '';
+
+    if ($mime === 'application/pdf') {
+        if (!function_exists('shell_exec')) {
+            return ['error' => 'Brak obsługi PDF na serwerze (shell_exec niedostępny).'];
+        }
+
+        $cmd = escapeshellcmd($PDFTOTEXT_BIN) . ' -layout ' . escapeshellarg($path) . ' -';
+        $raw_content = shell_exec($cmd);
+        if (empty($raw_content)) {
+            return ['error' => 'Nie udało się odczytać PDF. Upewnij się, że pdftotext jest zainstalowany.'];
+        }
+    } else {
+        $raw_content = file_get_contents($path) ?: '';
+    }
+
+    $clean = sanitize_file_content($raw_content, $MAX_DOCUMENT_STORE_CHARS);
+    if (mb_strlen($clean) > $MAX_FILE_PROMPT_CHARS) {
+        $warning = 'Plik jest długi — użyję najistotniejszych fragmentów w odpowiedzi.';
+    }
+
+    return ['content' => $clean, 'name' => $name, 'warning' => $warning];
+}
+
+function tokenize_text(string $text): array {
+    $text = mb_strtolower($text);
+    $text = preg_replace('/[^\p{L}\p{N}\s]+/u', ' ', $text);
+    $parts = preg_split('/\s+/', $text, -1, PREG_SPLIT_NO_EMPTY);
+    return array_values(array_filter($parts, fn($p) => mb_strlen($p) > 2));
+}
+
+function pick_document_segments(string $doc, string $query, int $segmentSize = 1200, int $maxSegments = 3): array {
+    $clean = preg_replace('/\s+/', ' ', trim($doc));
+    if ($clean === '') return [];
+
+    $segments = [];
+    $offset = 0;
+    $len = mb_strlen($clean);
+    while ($offset < $len && count($segments) < 12) {
+        $chunk = mb_substr($clean, $offset, $segmentSize);
+        $segments[] = $chunk;
+        $offset += $segmentSize;
+    }
+
+    $queryTokens = tokenize_text($query);
+    $scores = [];
+    foreach ($segments as $idx => $seg) {
+        $segTokens = tokenize_text($seg);
+        $score = 0;
+        foreach ($segTokens as $t) {
+            if (in_array($t, $queryTokens, true)) { $score++; }
+        }
+        $scores[$idx] = $score;
+    }
+
+    arsort($scores);
+    $selected = [];
+    foreach (array_slice(array_keys($scores), 0, $maxSegments) as $i) {
+        $selected[] = ['index' => $i + 1, 'text' => $segments[$i]];
+    }
+
+    if (empty($selected)) {
+        $selected[] = ['index' => 1, 'text' => $segments[0]];
+    }
+
+    return $selected;
+}
+
+function build_document_context(string $docName, string $docContent, string $query): string {
+    if (trim($docContent) === '') return '';
+    $segments = pick_document_segments($docContent, $query);
+    $block = "\n\n=== DOKUMENT SESYJNY: {$docName} ===\n";
+    foreach ($segments as $seg) {
+        $block .= "[SEKCJA {$seg['index']}] " . $seg['text'] . "\n---\n";
+    }
+    return $block . "Używaj wyłącznie cytowanych sekcji dokumentu jako źródła dla tej sesji.\n";
 }
 
 function send_json($data) {
@@ -85,13 +186,32 @@ function search_tavily($query, $api_key) {
     curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
     curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
     curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 1);
-    
+    curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
+
     $response = curl_exec($ch);
+    if ($response === false) {
+        $err = curl_error($ch);
+        log_error('Tavily curl_error: ' . $err);
+        curl_close($ch);
+        return ['error' => 'Błąd połączenia z Tavily'];
+    }
+
     $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
 
-    if ($http_code !== 200) return ['error' => "API Error: $http_code"];
-    return json_decode($response, true) ?? ['results' => []];
+    if ($http_code !== 200) {
+        log_error("Tavily HTTP {$http_code} dla zapytania: {$query}");
+        return ['error' => "API Error: $http_code"];
+    }
+
+    $decoded = json_decode($response, true);
+    if ($decoded === null) {
+        log_error('Tavily JSON decode failed dla zapytania: ' . $query);
+        return ['error' => 'Niepoprawna odpowiedź Tavily'];
+    }
+
+    return $decoded;
 }
 
 function build_tavily_query(string $message): string {
@@ -99,44 +219,52 @@ function build_tavily_query(string $message): string {
 
     if (preg_match('/\bhttps?:\/\/[^\s]+/i', $trimmed, $matches)) {
         $url = $matches[0];
-        $without_url = trim(str_replace($url, '', $trimmed));
-        $host = parse_url($url, PHP_URL_HOST) ?: $url;
-
-        if (!empty($without_url)) {
-            return $without_url . " (źródło: {$host})";
+        if ($trimmed !== $url) {
+            return $trimmed;
         }
 
-        return "Najważniejsze informacje ze strony {$host} ({$url})";
+        $host = parse_url($url, PHP_URL_HOST) ?: $url;
+        return "Najważniejsze informacje i aktualności ze strony {$host} ({$url})";
     }
 
     return $trimmed;
 }
 
 // 2. Simple Scraper (Wchodzenie w linki bezpośrednio)
-function simple_scrape($url) {
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, $url);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
-    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 1);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 15);
-    // Udajemy przeglądarkę, żeby nas nie zablokowali
-    curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
-    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 1);
-    
-    $html = curl_exec($ch);
-    $error = curl_error($ch);
-    curl_close($ch);
+function simple_scrape($url, int $retries = 2) {
+    for ($attempt = 1; $attempt <= $retries; $attempt++) {
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 1);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 12);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 8);
+        // Udajemy przeglądarkę, żeby nas nie zablokowali
+        curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 1);
 
-    if ($error || empty($html)) return false;
+        $html = curl_exec($ch);
+        $error = curl_error($ch);
+        curl_close($ch);
 
-    // Czyścimy HTML do samego tekstu
-    $html = preg_replace('/<script\b[^>]*>(.*?)<\/script>/is', "", $html);
-    $html = preg_replace('/<style\b[^>]*>(.*?)<\/style>/is', "", $html);
-    $text = strip_tags($html);
-    $text = preg_replace('/\s+/', ' ', $text); // Usuń nadmiar spacji
-    
-    return mb_substr(trim($text), 0, 15000); // Limit znaków dla modelu
+        if ($error || empty($html)) {
+            log_error("Scrape attempt {$attempt} failed for {$url}: {$error}");
+            if ($attempt === $retries) return false;
+            usleep(200000);
+            continue;
+        }
+
+        // Czyścimy HTML do samego tekstu
+        $html = preg_replace('/<script\b[^>]*>(.*?)<\/script>/is', "", $html);
+        $html = preg_replace('/<style\b[^>]*>(.*?)<\/style>/is', "", $html);
+        $text = strip_tags($html);
+        $text = preg_replace('/\s+/', ' ', $text); // Usuń nadmiar spacji
+
+        return mb_substr(trim($text), 0, 15000); // Limit znaków dla modelu
+    }
+
+    return false;
 }
 
 function prune_old_sessions(string $user, string $projectId) {
@@ -249,9 +377,48 @@ if ($action === 'create_project') {
     $projs = get_json("projects_{$current_user}.json");
     if (count($projs) >= $PROJECT_LIMIT) send_error("Limit max $PROJECT_LIMIT projekty.");
     $new_id = uniqid('p_');
-    $projs[] = ['id' => $new_id, 'name' => $input['name'] ?? 'Nowy'];
+    $name = trim($input['name'] ?? 'Nowy');
+    $projs[] = ['id' => $new_id, 'name' => $name ?: 'Nowy'];
     save_json("projects_{$current_user}.json", $projs);
-    send_json(['id' => $new_id, 'name' => $input['name']]);
+    send_json(['id' => $new_id, 'name' => $name]);
+}
+
+if ($action === 'rename_project') {
+    $projectId = $input['id'] ?? '';
+    $newName = trim($input['name'] ?? '');
+    if (!$projectId || !$newName) send_error('Brak danych projektu');
+
+    $projs = get_json("projects_{$current_user}.json");
+    $updated = false;
+    foreach ($projs as &$p) {
+        if ($p['id'] === $projectId) { $p['name'] = $newName; $updated = true; break; }
+    }
+
+    if (!$updated) send_error('Projekt nie istnieje', 404);
+    save_json("projects_{$current_user}.json", $projs);
+    send_json(['status' => 'ok', 'name' => $newName]);
+}
+
+if ($action === 'delete_project') {
+    $projectId = $input['id'] ?? '';
+    if (!$projectId) send_error('Brak ID projektu');
+
+    $projs = get_json("projects_{$current_user}.json");
+    if (count($projs) <= 1) send_error('Nie można usunąć ostatniego projektu', 400);
+
+    $projs = array_values(array_filter($projs, fn($p) => $p['id'] !== $projectId));
+    save_json("projects_{$current_user}.json", $projs);
+
+    // Usuwamy pamięć i historię sesji dla projektu
+    @unlink($DATA_DIR . '/' . basename("mem_{$current_user}_{$projectId}.json"));
+    $sessionsFile = "sessions_list_{$current_user}_{$projectId}.json";
+    $sessions = get_json($sessionsFile);
+    foreach ($sessions as $s) {
+        @unlink($DATA_DIR . '/' . basename("chat_{$current_user}_{$s['id']}.json"));
+    }
+    @unlink($DATA_DIR . '/' . basename($sessionsFile));
+
+    send_json(['status' => 'ok', 'projects' => $projs]);
 }
 
 if ($action === 'get_memory') {
@@ -268,11 +435,18 @@ if ($action === 'update_memory') {
     $act = $input['act'] ?? 'update';
     $file = "mem_{$current_user}_{$pid}.json";
     $mem = get_json($file);
+
     if ($act === 'delete') {
         if (isset($mem[$key])) unset($mem[$key]);
+    } elseif ($act === 'rename') {
+        $newKey = $input['new_key'] ?? '';
+        if (!$newKey) send_error('Brak nowego klucza pamięci');
+        $mem[$newKey] = $val ?: ($mem[$key] ?? '');
+        if ($newKey !== $key && isset($mem[$key])) unset($mem[$key]);
     } else {
         $mem[$key] = $val;
     }
+
     save_json($file, $mem);
     send_json(['status' => 'ok']);
 }
@@ -315,13 +489,19 @@ if ($action === 'chat') {
     echo json_encode(['status' => 'ping']) . "\n"; flush();
     if ($is_new_session) { echo json_encode(['status' => 'session_init', 'id' => $session_id]) . "\n"; flush(); }
 
-    // Plik
-    $file_content = "";
+    // Dokument sesyjny (przechowywany dla kontekstu tej sesji)
+    $document_text = '';
+    $document_name = '';
+    $document_warning = '';
+    $doc_file_path = $DATA_DIR . '/' . basename("session_doc_{$current_user}_{$session_id}.json");
+
     if (isset($_FILES['file']) && $_FILES['file']['error'] !== UPLOAD_ERR_NO_FILE) {
         if ($_FILES['file']['error'] !== UPLOAD_ERR_OK) {
+            log_error('Upload failed: ' . $_FILES['file']['error']);
             echo json_encode(['status' => 'file_error', 'msg' => 'Błąd przesyłania pliku.']) . "\n"; flush(); exit;
         }
         if ($_FILES['file']['size'] > $MAX_UPLOAD_SIZE) {
+            log_error('Upload rejected (size) dla użytkownika ' . $current_user);
             echo json_encode(['status' => 'file_error', 'msg' => 'Plik przekracza 2MB.']) . "\n"; flush(); exit;
         }
 
@@ -330,12 +510,33 @@ if ($action === 'chat') {
         if ($finfo) finfo_close($finfo);
 
         if ($mime && !in_array($mime, $ALLOWED_UPLOAD_MIME)) {
-            echo json_encode(['status' => 'file_error', 'msg' => 'Niedozwolony typ pliku. Dozwolone: TXT/MD/JSON/CSV.']) . "\n"; flush(); exit;
+            log_error('Upload rejected (mime) dla użytkownika ' . $current_user . ' mime=' . $mime);
+            echo json_encode(['status' => 'file_error', 'msg' => 'Niedozwolony typ pliku. Dozwolone: TXT/MD/JSON/CSV/PDF.']) . "\n"; flush(); exit;
         }
 
-        $raw_content = file_get_contents($_FILES['file']['tmp_name']);
-        $clean_content = sanitize_file_content($raw_content ?: '', $MAX_FILE_PROMPT_CHARS);
-        $file_content = "\n\n--- ZAŁĄCZNIK: {$_FILES['file']['name']} ---\n" . $clean_content . "\n------\n";
+        $extracted = extract_file_text($_FILES['file']['tmp_name'], $mime ?: '');
+        if (isset($extracted['error'])) {
+            log_error('Upload parse_error: ' . $extracted['error']);
+            echo json_encode(['status' => 'file_error', 'msg' => $extracted['error']]) . "\n"; flush(); exit;
+        }
+
+        $document_text = $extracted['content'] ?? '';
+        $document_name = $extracted['name'] ?? ($_FILES['file']['name'] ?? 'załącznik');
+        $document_warning = $extracted['warning'] ?? '';
+
+        save_json("session_doc_{$current_user}_{$session_id}.json", [
+            'name' => $document_name,
+            'content' => $document_text,
+            'created_at' => date('c')
+        ]);
+
+        if ($document_warning) {
+            echo json_encode(['status' => 'info', 'msg' => $document_warning]) . "\n"; flush();
+        }
+    } elseif (file_exists($doc_file_path)) {
+        $stored = json_decode(file_get_contents($doc_file_path), true);
+        $document_text = $stored['content'] ?? '';
+        $document_name = $stored['name'] ?? 'dokument';
     }
 
     // Pamięć
@@ -343,20 +544,39 @@ if ($action === 'chat') {
     $memory_context_str = "MEMORY CONTEXT:\n";
     foreach ($mem as $k => $v) { $memory_context_str .= "- {$k}: {$v}\n"; }
 
+    $document_context = build_document_context($document_name ?: 'dokument', $document_text, $message);
+
     // --- DETEKCJA URL I SCRAPING ---
     $url_context = "";
+    $internet_context = "";
     $scraped_success = false;
     
     // Szukamy URL w wiadomości
-    if (preg_match('/\bhttps?:\/\/[^\s]+/', $message, $matches)) {
-        $url_to_scrape = $matches[0];
+    $allowedSchemes = ['http', 'https'];
+    $urls = [];
+    if (preg_match_all('/\bhttps?:\/\/[^\s]+/i', $message, $matches)) {
+        foreach (array_unique($matches[0]) as $candidate) {
+            $scheme = strtolower(parse_url($candidate, PHP_URL_SCHEME) ?: '');
+            if (in_array($scheme, $allowedSchemes)) { $urls[] = $candidate; }
+            else { log_error('Odrzucono URL spoza whitelisty: ' . $candidate); }
+        }
+    }
+
+    if (!empty($urls)) {
+        $url_to_scrape = $urls[0];
+        if (count($urls) > 1) {
+            echo json_encode(['status' => 'searching', 'msg' => 'Wykryto wiele linków — analizuję pierwszy.']) . "\n"; flush();
+            log_error('Wiele URL w wiadomości, użyto: ' . $url_to_scrape);
+        }
+
         echo json_encode(['status' => 'searching', 'msg' => 'Pobieram treść strony...']) . "\n"; flush();
-        
+
         $scraped_content = simple_scrape($url_to_scrape);
         if ($scraped_content) {
-            $url_context = "\n\n=== TREŚĆ POBRANA ZE STRONY ($url_to_scrape) ===\n$scraped_content\n=====================================\n";
+            $url_context = "\n\n=== TREŚĆ POBRANA ZE STRONY ($url_to_scrape) ===\n$scraped_content\n===============================\n";
             $scraped_success = true;
         } else {
+            log_error('Scrape_error dla ' . $url_to_scrape);
             echo json_encode(['status' => 'scrape_error', 'msg' => 'Nie udało się pobrać treści strony.']) . "\n"; flush();
         }
     }
@@ -377,9 +597,10 @@ if ($action === 'chat') {
                     $internet_context .= "URL: {$r['url']}\nTITLE: {$r['title']}\nCONTENT: {$r['content']}\n---\n";
                 }
             } else {
-                $internet_context .= "Brak wyników.\n";
+                $internet_context .= "Brak wyników. Nie używaj wiedzy treningowej do faktów czasowych.\n";
             }
         } else {
+            log_error('Tavily search_error: ' . ($tavily_res['error'] ?? 'unknown'));
             echo json_encode(['status' => 'search_error', 'msg' => $tavily_res['error']]) . "\n"; flush();
         }
     }
@@ -395,14 +616,17 @@ Nie bawisz się w uprzejmości AI. Działasz jak analityczny partner biznesowy.
 ### HIERARCHIA DANYCH (ŹRÓDŁA PRAWDY):
 1. [NAJWYŻSZY PRIORYTET] === TREŚĆ POBRANA ZE STRONY ===
    Jeśli w kontekście widzisz sekcję "TREŚĆ POBRANA ZE STRONY", traktuj to jako fakt absolutny dla bieżącego zadania. Ignoruj swoją wiedzę treningową, jeśli jest sprzeczna z tym tekstem.
-   
-2. [WYSOKI PRIORYTET] === WYNIKI WYSZUKIWANIA (ONLINE) ===
+
+2. [WYSOKI PRIORYTET] === DOKUMENT SESYJNY ===
+   Użytkownik przesłał dokument tylko na tę sesję. Cytuj sekcje opisane w nagłówkach [SEKCJA X] i nie wychodź poza dostarczony tekst.
+
+3. [WYSOKI PRIORYTET] === WYNIKI WYSZUKIWANIA (ONLINE) ===
    Aktualne dane z sieci. Używaj ich do faktów, dat, cen i newsów. Zawsze cytuj źródło, jeśli podajesz fakt (np. [Domena.com]).
 
-3. [ŚREDNI PRIORYTET] === MEMORY CONTEXT ===
+4. [ŚREDNI PRIORYTET] === MEMORY CONTEXT ===
    To długoterminowa pamięć projektu. Używaj jej, by zachować spójność z poprzednimi ustaleniami (styl marki, założenia biznesowe, tech stack).
 
-4. [NISKI PRIORYTET] Twoja wiedza treningowa.
+5. [NISKI PRIORYTET] Twoja wiedza treningowa.
    Używaj tylko do ogólnej logiki, kodowania i kreatywności.
 
 ### INSTRUKCJE OPERACYJNE:
@@ -410,6 +634,7 @@ Nie bawisz się w uprzejmości AI. Działasz jak analityczny partner biznesowy.
 - **Styl:** Zwięzły, techniczny, "żołnierski". Bez lania wody.
 - **Kod:** Jeśli piszesz kod, ma być gotowy do wdrożenia (production-ready). Używaj bloków ```language.
 - **Źródła online:** Jeśli dostępna jest sekcja "TREŚĆ POBRANA ZE STRONY" lub "WYNIKI WYSZUKIWANIA", opieraj się na nich w pierwszej kolejności i zawsze podawaj źródło w nawiasie kwadratowym (np. [example.com] lub [źródło: domena]).
+- **Źródła online:** Jeśli dostępna jest sekcja "TREŚĆ POBRANA ZE STRONY" lub "WYNIKI WYSZUKIWANIA", opieraj się na nich w pierwszej kolejności i zawsze podawaj źródło w nawiasie kwadratowym (np. [example.com] lub [źródło: domena]). Jeśli sekcja "WYNIKI WYSZUKIWANIA" zawiera komunikat o braku wyników, powiedz to wprost i nie korzystaj z wiedzy treningowej do podawania faktów czasowych.
 - **Brak wiedzy:** Jeśli czegoś nie ma w wynikach wyszukiwania ani na stronie, powiedz wprost: "Brak danych w źródłach". Nie halucynuj i nie dopowiadaj.
 - **Sprzeczności:** W przypadku konfliktu między treningiem a danymi z sieci/strony, wybieraj dane z sieci/strony. W przypadku sprzeczności między różnymi wynikami online, wskaż to i zaznacz brak pewności.
 - **Formatowanie:** Używaj pogrubień (**kluczowe wnioski**) i list wypunktowanych dla czytelności.
@@ -427,7 +652,7 @@ EOT;
     foreach (array_slice($chat_history, -6) as $h) { $messages[] = ['role' => $h['role'], 'content' => $h['content']]; }
 
     // Final message construct
-    $final_user_msg = $url_context . $internet_context . "\nUSER QUESTION: " . $message . $file_content;
+    $final_user_msg = $url_context . $internet_context . $document_context . "\nUSER QUESTION: " . $message;
     $messages[] = ['role' => 'user', 'content' => $final_user_msg];
 
     // DeepSeek Call
@@ -439,8 +664,9 @@ EOT;
         'stream' => true
     ]));
     curl_setopt($ch, CURLOPT_HTTPHEADER, ["Content-Type: application/json", "Authorization: Bearer $DEEPSEEK_KEY"]);
-    
+
     $full_bot_response = "";
+    $curl_error = "";
     curl_setopt($ch, CURLOPT_WRITEFUNCTION, function($ch, $data) use (&$full_bot_response) {
         $lines = explode("\n", $data);
         foreach ($lines as $line) {
@@ -459,26 +685,48 @@ EOT;
         }
         return strlen($data);
     });
-    curl_exec($ch);
+
+    $execResult = curl_exec($ch);
+    if ($execResult === false) {
+        $curl_error = curl_error($ch);
+    }
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
 
-    if (!empty($full_bot_response)) {
-        $chat_history[] = ['role' => 'user', 'content' => $message . ($file_content ? " [Plik]" : "")];
-        $chat_history[] = ['role' => 'assistant', 'content' => $full_bot_response];
-        save_json("chat_{$current_user}_{$session_id}.json", $chat_history);
-        
-        // Update listy
-        $list_file = "sessions_list_{$current_user}_{$project_id}.json";
-        $sessions_list = get_json($list_file);
-        $exists = false;
-        foreach ($sessions_list as &$s) {
-            if ($s['id'] === $session_id) { $s['updated_at'] = date('Y-m-d H:i:s'); $s['title'] = mb_substr($message, 0, 30).'...'; $exists = true; break; }
-        }
-        if (!$exists) {
-            $sessions_list[] = ['id' => $session_id, 'title' => mb_substr($message, 0, 30).'...', 'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s')];
-        }
-        save_json($list_file, $sessions_list);
+    if (!empty($curl_error)) {
+        log_error('DeepSeek curl_error: ' . $curl_error);
+        echo json_encode(['status' => 'llm_error', 'msg' => 'Błąd połączenia z modelem: ' . $curl_error]) . "\n"; flush();
+        exit;
     }
+
+    if ($httpCode >= 400) {
+        log_error("DeepSeek HTTP {$httpCode} for session {$session_id}");
+        echo json_encode(['status' => 'llm_error', 'msg' => "Model zwrócił błąd HTTP {$httpCode}"]) . "\n"; flush();
+        exit;
+    }
+
+    if (empty($full_bot_response)) {
+        echo json_encode(['status' => 'llm_error', 'msg' => 'Model nie zwrócił żadnej treści.']) . "\n"; flush();
+        exit;
+    }
+
+    $chat_history[] = ['role' => 'user', 'content' => $message . ($document_text ? " [Dokument]" : "")];
+    $chat_history[] = ['role' => 'assistant', 'content' => $full_bot_response];
+    save_json("chat_{$current_user}_{$session_id}.json", $chat_history);
+
+    // Update listy
+    $list_file = "sessions_list_{$current_user}_{$project_id}.json";
+    $sessions_list = get_json($list_file);
+    $exists = false;
+    foreach ($sessions_list as &$s) {
+        if ($s['id'] === $session_id) { $s['updated_at'] = date('Y-m-d H:i:s'); $s['title'] = mb_substr($message, 0, 30).'...'; $exists = true; break; }
+    }
+    if (!$exists) {
+        $sessions_list[] = ['id' => $session_id, 'title' => mb_substr($message, 0, 30).'...', 'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s')];
+    }
+    save_json($list_file, $sessions_list);
+
+    echo json_encode(['status' => 'done', 'session_id' => $session_id]) . "\n"; flush();
     exit;
 }
 ?>

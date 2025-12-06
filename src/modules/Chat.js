@@ -8,13 +8,23 @@ export const Chat = {
     // Stan wyszukiwania (domyślnie wyłączony)
     isSearchActive: false,
     MAX_FILE_SIZE: 2 * 1024 * 1024,
-    ALLOWED_TYPES: ['text/plain', 'text/markdown', 'text/x-markdown', 'application/json', 'text/csv'],
+    MAX_FILE_PROMPT_CHARS: 12000,
+    ALLOWED_TYPES: ['text/plain', 'text/markdown', 'text/x-markdown', 'application/json', 'text/csv', 'application/pdf'],
+    ALLOWED_EXTENSIONS: ['txt', 'md', 'markdown', 'json', 'csv', 'pdf'],
 
-    isFileAllowed(file) {
-        if (!file) return true;
-        if (file.size > Chat.MAX_FILE_SIZE) return false;
-        if (!file.type) return true; // Niektóre przeglądarki nie podają typu; waliduje backend
-        return Chat.ALLOWED_TYPES.includes(file.type);
+    validateFile(file) {
+        if (!file) return { ok: true };
+        if (file.size > Chat.MAX_FILE_SIZE) return { ok: false, reason: 'size' };
+
+        const ext = (file.name.split('.').pop() || '').toLowerCase();
+        const mimeOk = file.type ? Chat.ALLOWED_TYPES.includes(file.type) : false;
+        const extOk = ext ? Chat.ALLOWED_EXTENSIONS.includes(ext) : false;
+
+        if (file.type && !mimeOk) return { ok: false, reason: 'mime' };
+        if (!file.type && !extOk) return { ok: false, reason: 'mime' };
+        if (!mimeOk && !extOk) return { ok: false, reason: 'mime' };
+
+        return { ok: true };
     },
 
     // NOWA FUNKCJA: Przełącznik
@@ -112,11 +122,16 @@ export const Chat = {
 
     handleFile: (input) => { /* ... bez zmian ... */
         if (input.files[0]) {
-            if (!Chat.isFileAllowed(input.files[0])) {
-                Toasts.show('Plik jest zbyt duży lub ma nieobsługiwany format (dozwolone: TXT/MD/JSON/CSV, max 2MB).', 'error');
+            const validation = Chat.validateFile(input.files[0]);
+            if (!validation.ok) {
+                const msg = validation.reason === 'size'
+                    ? 'Plik jest zbyt duży (max 2MB).'
+                    : 'Niedozwolony typ pliku. Dozwolone: TXT/MD/JSON/CSV/PDF.';
+                Toasts.show(msg, 'error');
                 Chat.clearFile();
                 return;
             }
+
             const preview = document.getElementById('file-preview');
             const nameEl = document.getElementById('filename');
             if(preview && nameEl) { preview.classList.remove('hidden'); nameEl.innerText = input.files[0].name; }
@@ -139,10 +154,16 @@ export const Chat = {
 
         if (!txt && !file) return;
 
-        if (file && !Chat.isFileAllowed(file)) {
-            Toasts.show('Plik jest zbyt duży lub ma nieobsługiwany format (dozwolone: TXT/MD/JSON/CSV, max 2MB).', 'error');
-            Chat.clearFile();
-            return;
+        if (file) {
+            const validation = Chat.validateFile(file);
+            if (!validation.ok) {
+                const msg = validation.reason === 'size'
+                    ? 'Plik jest zbyt duży (max 2MB).'
+                    : 'Niedozwolony typ pliku. Dozwolone: TXT/MD/JSON/CSV/PDF.';
+                Toasts.show(msg, 'error');
+                Chat.clearFile();
+                return;
+            }
         }
 
         Chat.renderMessage('user', txt + (file ? ` [Plik: ${file.name}]` : ''));
@@ -200,12 +221,27 @@ export const Chat = {
                             searchNotices += `> ⚠️ ${d.msg || 'Błąd wyszukiwania.'}\n\n`;
                             if (botBubble) botBubble.innerHTML = Render.markdown(searchNotices + botText || '<span class="animate-pulse">Analizuję...</span>');
                         }
+                        else if (d.status === 'info') {
+                            searchNotices += `> ℹ️ ${d.msg || ''}\n\n`;
+                            if (botBubble) botBubble.innerHTML = Render.markdown(searchNotices + botText || '<span class="animate-pulse">Analizuję...</span>');
+                        }
+                        else if (d.status === 'llm_error') {
+                            halted = true;
+                            const warn = d.msg || 'Model zwrócił błąd.';
+                            if (botBubble) botBubble.innerHTML = `<span class="text-red-400">${warn}</span>`;
+                            Toasts.show(warn, 'error');
+                            break;
+                        }
                         else if (d.status === 'file_error') {
                             halted = true;
                             const warn = d.msg || 'Plik został odrzucony (format/rozmiar).';
                             searchNotices += `> ⚠️ ${warn}\n\n`;
                             if (botBubble) botBubble.innerHTML = Render.markdown(searchNotices || warn);
                             Toasts.show(warn, 'error');
+                            break;
+                        }
+                        else if (d.status === 'done') {
+                            halted = true;
                             break;
                         }
                     } catch (e) { }
