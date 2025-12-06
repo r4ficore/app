@@ -9,8 +9,8 @@ export const Chat = {
     isSearchActive: false,
     MAX_FILE_SIZE: 2 * 1024 * 1024,
     MAX_FILE_PROMPT_CHARS: 12000,
-    ALLOWED_TYPES: ['text/plain', 'text/markdown', 'text/x-markdown', 'application/json', 'text/csv'],
-    ALLOWED_EXTENSIONS: ['txt', 'md', 'markdown', 'json', 'csv'],
+    ALLOWED_TYPES: ['text/plain', 'text/markdown', 'text/x-markdown', 'application/json', 'text/csv', 'application/pdf'],
+    ALLOWED_EXTENSIONS: ['txt', 'md', 'markdown', 'json', 'csv', 'pdf'],
 
     validateFile(file) {
         if (!file) return { ok: true };
@@ -126,22 +126,15 @@ export const Chat = {
             if (!validation.ok) {
                 const msg = validation.reason === 'size'
                     ? 'Plik jest zbyt duży (max 2MB).'
-                    : 'Niedozwolony typ pliku. Dozwolone: TXT/MD/JSON/CSV.';
+                    : 'Niedozwolony typ pliku. Dozwolone: TXT/MD/JSON/CSV/PDF.';
                 Toasts.show(msg, 'error');
                 Chat.clearFile();
                 return;
             }
 
-            input.files[0].text().then(text => {
-                if (text.length > Chat.MAX_FILE_PROMPT_CHARS) {
-                    Toasts.show(`Plik przekracza limit ${Chat.MAX_FILE_PROMPT_CHARS} znaków i został odrzucony.`, 'error');
-                    Chat.clearFile();
-                    return;
-                }
-                const preview = document.getElementById('file-preview');
-                const nameEl = document.getElementById('filename');
-                if(preview && nameEl) { preview.classList.remove('hidden'); nameEl.innerText = input.files[0].name; }
-            });
+            const preview = document.getElementById('file-preview');
+            const nameEl = document.getElementById('filename');
+            if(preview && nameEl) { preview.classList.remove('hidden'); nameEl.innerText = input.files[0].name; }
         }
     },
 
@@ -166,15 +159,8 @@ export const Chat = {
             if (!validation.ok) {
                 const msg = validation.reason === 'size'
                     ? 'Plik jest zbyt duży (max 2MB).'
-                    : 'Niedozwolony typ pliku. Dozwolone: TXT/MD/JSON/CSV.';
+                    : 'Niedozwolony typ pliku. Dozwolone: TXT/MD/JSON/CSV/PDF.';
                 Toasts.show(msg, 'error');
-                Chat.clearFile();
-                return;
-            }
-
-            const textContent = await file.text();
-            if (textContent.length > Chat.MAX_FILE_PROMPT_CHARS) {
-                Toasts.show(`Plik przekracza limit ${Chat.MAX_FILE_PROMPT_CHARS} znaków i został odrzucony.`, 'error');
                 Chat.clearFile();
                 return;
             }
@@ -233,6 +219,10 @@ export const Chat = {
                         }
                         else if (d.status === 'search_error' || d.status === 'scrape_error') {
                             searchNotices += `> ⚠️ ${d.msg || 'Błąd wyszukiwania.'}\n\n`;
+                            if (botBubble) botBubble.innerHTML = Render.markdown(searchNotices + botText || '<span class="animate-pulse">Analizuję...</span>');
+                        }
+                        else if (d.status === 'info') {
+                            searchNotices += `> ℹ️ ${d.msg || ''}\n\n`;
                             if (botBubble) botBubble.innerHTML = Render.markdown(searchNotices + botText || '<span class="animate-pulse">Analizuję...</span>');
                         }
                         else if (d.status === 'llm_error') {

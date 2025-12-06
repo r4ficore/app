@@ -20,8 +20,12 @@ $MEMORY_LIMIT = 20000;
 $PROJECT_LIMIT = 2;
 $SESSION_TTL_DAYS = intval($env('SESSION_TTL_DAYS', 30));
 $MAX_UPLOAD_SIZE = 2 * 1024 * 1024; // 2MB
-$ALLOWED_UPLOAD_MIME = ['text/plain', 'text/markdown', 'text/x-markdown', 'application/json', 'text/csv'];
+$ALLOWED_UPLOAD_MIME = [
+    'text/plain', 'text/markdown', 'text/x-markdown', 'application/json', 'text/csv', 'application/pdf'
+];
 $MAX_FILE_PROMPT_CHARS = 12000;
+$MAX_DOCUMENT_STORE_CHARS = 50000;
+$PDFTOTEXT_BIN = $env('PDFTOTEXT_BIN', 'pdftotext');
 
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: POST, GET, OPTIONS");
@@ -65,6 +69,89 @@ function sanitize_file_content(string $content, int $maxLen) {
     $content = preg_replace('/[\x00-\x08\x0B-\x1F\x7F]/u', '', $content);
     $content = mb_substr($content, 0, $maxLen);
     return $content;
+}
+
+function extract_file_text(string $path, string $mime): array {
+    global $PDFTOTEXT_BIN, $MAX_DOCUMENT_STORE_CHARS, $MAX_FILE_PROMPT_CHARS;
+
+    $name = basename($path);
+    $raw_content = '';
+    $warning = '';
+
+    if ($mime === 'application/pdf') {
+        if (!function_exists('shell_exec')) {
+            return ['error' => 'Brak obsługi PDF na serwerze (shell_exec niedostępny).'];
+        }
+
+        $cmd = escapeshellcmd($PDFTOTEXT_BIN) . ' -layout ' . escapeshellarg($path) . ' -';
+        $raw_content = shell_exec($cmd);
+        if (empty($raw_content)) {
+            return ['error' => 'Nie udało się odczytać PDF. Upewnij się, że pdftotext jest zainstalowany.'];
+        }
+    } else {
+        $raw_content = file_get_contents($path) ?: '';
+    }
+
+    $clean = sanitize_file_content($raw_content, $MAX_DOCUMENT_STORE_CHARS);
+    if (mb_strlen($clean) > $MAX_FILE_PROMPT_CHARS) {
+        $warning = 'Plik jest długi — użyję najistotniejszych fragmentów w odpowiedzi.';
+    }
+
+    return ['content' => $clean, 'name' => $name, 'warning' => $warning];
+}
+
+function tokenize_text(string $text): array {
+    $text = mb_strtolower($text);
+    $text = preg_replace('/[^\p{L}\p{N}\s]+/u', ' ', $text);
+    $parts = preg_split('/\s+/', $text, -1, PREG_SPLIT_NO_EMPTY);
+    return array_values(array_filter($parts, fn($p) => mb_strlen($p) > 2));
+}
+
+function pick_document_segments(string $doc, string $query, int $segmentSize = 1200, int $maxSegments = 3): array {
+    $clean = preg_replace('/\s+/', ' ', trim($doc));
+    if ($clean === '') return [];
+
+    $segments = [];
+    $offset = 0;
+    $len = mb_strlen($clean);
+    while ($offset < $len && count($segments) < 12) {
+        $chunk = mb_substr($clean, $offset, $segmentSize);
+        $segments[] = $chunk;
+        $offset += $segmentSize;
+    }
+
+    $queryTokens = tokenize_text($query);
+    $scores = [];
+    foreach ($segments as $idx => $seg) {
+        $segTokens = tokenize_text($seg);
+        $score = 0;
+        foreach ($segTokens as $t) {
+            if (in_array($t, $queryTokens, true)) { $score++; }
+        }
+        $scores[$idx] = $score;
+    }
+
+    arsort($scores);
+    $selected = [];
+    foreach (array_slice(array_keys($scores), 0, $maxSegments) as $i) {
+        $selected[] = ['index' => $i + 1, 'text' => $segments[$i]];
+    }
+
+    if (empty($selected)) {
+        $selected[] = ['index' => 1, 'text' => $segments[0]];
+    }
+
+    return $selected;
+}
+
+function build_document_context(string $docName, string $docContent, string $query): string {
+    if (trim($docContent) === '') return '';
+    $segments = pick_document_segments($docContent, $query);
+    $block = "\n\n=== DOKUMENT SESYJNY: {$docName} ===\n";
+    foreach ($segments as $seg) {
+        $block .= "[SEKCJA {$seg['index']}] " . $seg['text'] . "\n---\n";
+    }
+    return $block . "Używaj wyłącznie cytowanych sekcji dokumentu jako źródła dla tej sesji.\n";
 }
 
 function send_json($data) {
@@ -402,8 +489,12 @@ if ($action === 'chat') {
     echo json_encode(['status' => 'ping']) . "\n"; flush();
     if ($is_new_session) { echo json_encode(['status' => 'session_init', 'id' => $session_id]) . "\n"; flush(); }
 
-    // Plik
-    $file_content = "";
+    // Dokument sesyjny (przechowywany dla kontekstu tej sesji)
+    $document_text = '';
+    $document_name = '';
+    $document_warning = '';
+    $doc_file_path = $DATA_DIR . '/' . basename("session_doc_{$current_user}_{$session_id}.json");
+
     if (isset($_FILES['file']) && $_FILES['file']['error'] !== UPLOAD_ERR_NO_FILE) {
         if ($_FILES['file']['error'] !== UPLOAD_ERR_OK) {
             log_error('Upload failed: ' . $_FILES['file']['error']);
@@ -420,18 +511,40 @@ if ($action === 'chat') {
 
         if ($mime && !in_array($mime, $ALLOWED_UPLOAD_MIME)) {
             log_error('Upload rejected (mime) dla użytkownika ' . $current_user . ' mime=' . $mime);
-            echo json_encode(['status' => 'file_error', 'msg' => 'Niedozwolony typ pliku. Dozwolone: TXT/MD/JSON/CSV.']) . "\n"; flush(); exit;
+            echo json_encode(['status' => 'file_error', 'msg' => 'Niedozwolony typ pliku. Dozwolone: TXT/MD/JSON/CSV/PDF.']) . "\n"; flush(); exit;
         }
 
-        $raw_content = file_get_contents($_FILES['file']['tmp_name']);
-        $clean_content = sanitize_file_content($raw_content ?: '', $MAX_FILE_PROMPT_CHARS);
-        $file_content = "\n\n--- ZAŁĄCZNIK: {$_FILES['file']['name']} ---\n" . $clean_content . "\n------\n";
+        $extracted = extract_file_text($_FILES['file']['tmp_name'], $mime ?: '');
+        if (isset($extracted['error'])) {
+            log_error('Upload parse_error: ' . $extracted['error']);
+            echo json_encode(['status' => 'file_error', 'msg' => $extracted['error']]) . "\n"; flush(); exit;
+        }
+
+        $document_text = $extracted['content'] ?? '';
+        $document_name = $extracted['name'] ?? ($_FILES['file']['name'] ?? 'załącznik');
+        $document_warning = $extracted['warning'] ?? '';
+
+        save_json("session_doc_{$current_user}_{$session_id}.json", [
+            'name' => $document_name,
+            'content' => $document_text,
+            'created_at' => date('c')
+        ]);
+
+        if ($document_warning) {
+            echo json_encode(['status' => 'info', 'msg' => $document_warning]) . "\n"; flush();
+        }
+    } elseif (file_exists($doc_file_path)) {
+        $stored = json_decode(file_get_contents($doc_file_path), true);
+        $document_text = $stored['content'] ?? '';
+        $document_name = $stored['name'] ?? 'dokument';
     }
 
     // Pamięć
     $mem = get_json("mem_{$current_user}_{$project_id}.json");
     $memory_context_str = "MEMORY CONTEXT:\n";
     foreach ($mem as $k => $v) { $memory_context_str .= "- {$k}: {$v}\n"; }
+
+    $document_context = build_document_context($document_name ?: 'dokument', $document_text, $message);
 
     // --- DETEKCJA URL I SCRAPING ---
     $url_context = "";
@@ -503,14 +616,17 @@ Nie bawisz się w uprzejmości AI. Działasz jak analityczny partner biznesowy.
 ### HIERARCHIA DANYCH (ŹRÓDŁA PRAWDY):
 1. [NAJWYŻSZY PRIORYTET] === TREŚĆ POBRANA ZE STRONY ===
    Jeśli w kontekście widzisz sekcję "TREŚĆ POBRANA ZE STRONY", traktuj to jako fakt absolutny dla bieżącego zadania. Ignoruj swoją wiedzę treningową, jeśli jest sprzeczna z tym tekstem.
-   
-2. [WYSOKI PRIORYTET] === WYNIKI WYSZUKIWANIA (ONLINE) ===
+
+2. [WYSOKI PRIORYTET] === DOKUMENT SESYJNY ===
+   Użytkownik przesłał dokument tylko na tę sesję. Cytuj sekcje opisane w nagłówkach [SEKCJA X] i nie wychodź poza dostarczony tekst.
+
+3. [WYSOKI PRIORYTET] === WYNIKI WYSZUKIWANIA (ONLINE) ===
    Aktualne dane z sieci. Używaj ich do faktów, dat, cen i newsów. Zawsze cytuj źródło, jeśli podajesz fakt (np. [Domena.com]).
 
-3. [ŚREDNI PRIORYTET] === MEMORY CONTEXT ===
+4. [ŚREDNI PRIORYTET] === MEMORY CONTEXT ===
    To długoterminowa pamięć projektu. Używaj jej, by zachować spójność z poprzednimi ustaleniami (styl marki, założenia biznesowe, tech stack).
 
-4. [NISKI PRIORYTET] Twoja wiedza treningowa.
+5. [NISKI PRIORYTET] Twoja wiedza treningowa.
    Używaj tylko do ogólnej logiki, kodowania i kreatywności.
 
 ### INSTRUKCJE OPERACYJNE:
@@ -536,7 +652,7 @@ EOT;
     foreach (array_slice($chat_history, -6) as $h) { $messages[] = ['role' => $h['role'], 'content' => $h['content']]; }
 
     // Final message construct
-    $final_user_msg = $url_context . $internet_context . "\nUSER QUESTION: " . $message . $file_content;
+    $final_user_msg = $url_context . $internet_context . $document_context . "\nUSER QUESTION: " . $message;
     $messages[] = ['role' => 'user', 'content' => $final_user_msg];
 
     // DeepSeek Call
@@ -594,7 +710,7 @@ EOT;
         exit;
     }
 
-    $chat_history[] = ['role' => 'user', 'content' => $message . ($file_content ? " [Plik]" : "")];
+    $chat_history[] = ['role' => 'user', 'content' => $message . ($document_text ? " [Dokument]" : "")];
     $chat_history[] = ['role' => 'assistant', 'content' => $full_bot_response];
     save_json("chat_{$current_user}_{$session_id}.json", $chat_history);
 
