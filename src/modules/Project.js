@@ -8,8 +8,8 @@ import { Modal } from '../ui/Modal.js';
 export const Project = {
     loadAll: async () => {
         try {
-            const res = await fetch(`${CONFIG.API_URL}?action=get_projects`, { 
-                headers: {'Authorization': Store.get('token')} 
+            const res = await fetch(`${CONFIG.API_URL}?action=get_projects`, {
+                headers: {'Authorization': Store.get('token')}
             });
             if (res.status === 401) return location.reload(); // Quick logout
             
@@ -25,12 +25,16 @@ export const Project = {
                 sel.appendChild(opt);
             });
 
+            sel.onchange = Project.change;
+
             if (data.projects.length > 0) {
                 // Jeśli nie ma wybranego projektu, wybierz pierwszy
-                if (!Store.get('currentProject')) {
-                    sel.value = data.projects[0].id;
-                    Project.change();
+                const hasCurrent = data.projects.some(p => p.id === Store.get('currentProject'));
+                if (!Store.get('currentProject') || !hasCurrent) {
+                    Store.set('currentProject', data.projects[0].id);
                 }
+                sel.value = Store.get('currentProject');
+                Project.change();
             }
         } catch (e) {
             Toasts.show('Błąd ładowania projektów', 'error');
@@ -60,10 +64,63 @@ export const Project = {
         }
     },
 
+    rename: async () => {
+        const currentId = Store.get('currentProject');
+        const projects = Store.get('projects') || [];
+        const current = projects.find(p => p.id === currentId);
+        if (!current) return Toasts.show('Brak projektu do zmiany', 'error');
+
+        const newName = await Modal.open('Zmień nazwę projektu', 'input', 'Nowa nazwa', current.name);
+        if (!newName) return;
+
+        try {
+            const res = await fetch(`${CONFIG.API_URL}?action=rename_project`, {
+                method: 'POST',
+                headers: {'Authorization': Store.get('token')},
+                body: JSON.stringify({ id: currentId, name: newName })
+            });
+            const d = await res.json();
+            if (d.error) throw new Error(d.error);
+            await Project.loadAll();
+            document.getElementById('project-select').value = currentId;
+            Toasts.show('Nazwa projektu zaktualizowana');
+        } catch (e) {
+            Toasts.show(e.message || 'Błąd zmiany nazwy', 'error');
+        }
+    },
+
+    remove: async () => {
+        const currentId = Store.get('currentProject');
+        if (!currentId) return Toasts.show('Brak projektu do usunięcia', 'error');
+        if (!(await Modal.open('Usunąć projekt?', 'confirm'))) return;
+
+        try {
+            const res = await fetch(`${CONFIG.API_URL}?action=delete_project`, {
+                method: 'POST',
+                headers: {'Authorization': Store.get('token')},
+                body: JSON.stringify({ id: currentId })
+            });
+            const d = await res.json();
+            if (d.error) throw new Error(d.error);
+
+            await Project.loadAll();
+            const sel = document.getElementById('project-select');
+            if (sel && sel.value) {
+                Store.set('currentProject', sel.value);
+                Project.change();
+            }
+
+            Toasts.show('Projekt usunięty');
+        } catch (e) {
+            Toasts.show(e.message || 'Błąd usuwania', 'error');
+        }
+    },
+
     change: () => {
-        const pid = document.getElementById('project-select').value;
+        const sel = document.getElementById('project-select');
+        const pid = sel ? sel.value : null;
         Store.set('currentProject', pid);
-        
+
         // Wywołujemy inne moduły (zakładając, że App.js je załadował do window.BrandOS)
         if (window.BrandOS) {
             window.BrandOS.Chat.loadSessions();

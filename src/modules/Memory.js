@@ -99,14 +99,9 @@ export const Memory = {
         // Przekazujemy k i v jako wartości domyślne
         const result = await Modal.open(`Edycja: ${k}`, 'memory', k, v);
         if (result) {
-            // Jeśli użytkownik zmienił klucz, musimy usunąć stary i dodać nowy (lub API musi obsłużyć rename)
-            // W obecnym prostym API PHP update nadpisuje klucz. 
-            // Jeśli klucz jest inny, powstanie nowy wpis. 
-            // Dla uproszczenia zakładamy update wartości dla tego samego klucza.
-            // Jeśli zmienisz klucz w modalu -> powstanie nowy wpis (stary zostanie).
-            // Żeby zrobić rename, trzeba by usunąć stary.
-            // Na razie update wartości:
-            Memory.save(result.key, result.value);
+            const original = result.originalKey || k;
+            const act = result.key !== original ? 'rename' : 'update';
+            Memory.save(result.key, result.value, act, original);
         }
     },
 
@@ -116,19 +111,23 @@ export const Memory = {
         }
     },
 
-    save: async (k, v, act = 'update') => {
+    save: async (k, v, act = 'update', originalKey = '') => {
         try {
+            const payload = {
+                project_id: Store.get('currentProject'),
+                key: act === 'rename' ? (originalKey || k) : k,
+                value: v,
+                act: act
+            };
+
+            if (act === 'rename') payload.new_key = k;
+
             await fetch(`${CONFIG.API_URL}?action=update_memory`, {
-                method: 'POST', 
-                headers: {'Authorization': Store.get('token')}, 
-                body: JSON.stringify({
-                    project_id: Store.get('currentProject'), 
-                    key: k, 
-                    value: v,
-                    act: act
-                })
+                method: 'POST',
+                headers: {'Authorization': Store.get('token')},
+                body: JSON.stringify(payload)
             });
-            Memory.load(); 
+            Memory.load();
             Toasts.show(act === 'delete' ? 'Usunięto' : 'Zapisano wiedzę');
         } catch(e) {
             Toasts.show('Błąd zapisu', 'error');
