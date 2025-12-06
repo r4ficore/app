@@ -34,7 +34,6 @@ if (!file_exists($logDir)) { mkdir($logDir, 0755, true); }
 
 $missing_keys = [];
 if (empty($DEEPSEEK_KEY)) { $missing_keys[] = 'DEEPSEEK_KEY'; }
-if (empty($TAVILY_KEY)) { $missing_keys[] = 'TAVILY_KEY'; }
 if (!empty($missing_keys)) {
     http_response_code(500);
     send_json(['error' => 'Brak wymaganych kluczy API: ' . implode(', ', $missing_keys)]);
